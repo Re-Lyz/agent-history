@@ -2,6 +2,8 @@
 
 [中文](README.md) · **0.1.0-beta.1** · MIT licensed
 
+[Download the beta source ZIP](https://github.com/Re-Lyz/agent-history/releases/tag/v0.1.0-beta.1) · [Windows / Ubuntu CI](https://github.com/Re-Lyz/agent-history/actions/runs/38031469719)
+
 A local desktop viewer and history index for Codex and Claude Code. Search conversations, read Markdown, select an Agent command and working directory, and resume in an independent terminal. Supports a single Agent as well as multiple Codex homes / login connections. Agent installation and authentication remain with the user's CLI.
 
 ![Real desktop UI with generated conversation data](docs/images/demo.png)
@@ -11,6 +13,8 @@ A local desktop viewer and history index for Codex and Claude Code. Search conve
 Requires Python 3.11+, Tk, and SQLite FTS5 with the trigram tokenizer. Use a Python build that includes Tcl/Tk on Windows; install your distribution's Python, venv and Tk packages on Linux. From a clone or extracted source ZIP:
 
 ```text
+git clone https://github.com/Re-Lyz/agent-history.git
+cd agent-history
 python -m venv .venv
 ```
 
@@ -33,7 +37,7 @@ Basic installation registers only the viewer. MCP, hooks, background jobs and de
 - Native Codex resume across homes, text-based Claude-to-Codex conversion, temporary cross-Agent handoffs with durable return versions.
 - Recoverable deletion with active-session / writer-lock protection; optional stdlib MCP history readers.
 
-Locally verified on Windows / Python 3.12 and Ubuntu 20.04 / WSL2 / WSLg / Python 3.12.2 / xterm, using Codex CLI 0.159.2. Windows and Linux synthetic regressions and zero-model-request native Codex checks passed. Actual Claude CLI interactive resume, other Linux terminals / distributions, native Wayland and real systemd scheduling remain unverified. macOS is not supported yet. GitHub-hosted CI is configured but awaits a remote repository and successful run. Temporary user environments were exercised; this is not evidence of fresh OS installation testing.
+Locally verified on Windows / Python 3.12 and Ubuntu 20.04 / WSL2 / WSLg / Python 3.12.2 / xterm, using Codex CLI 0.159.2. [GitHub-hosted Windows / Ubuntu 22.04 CI](https://github.com/Re-Lyz/agent-history/actions/runs/38031469719) also passed regressions, release packaging, temporary-user installation and all four zero-model-request native Codex checks. Actual Claude CLI interactive resume, other Linux desktop terminals, native Wayland and real systemd scheduling remain unverified. macOS is not supported yet. Temporary user environments were exercised; this is not evidence of fresh OS installation testing.
 
 Native formats may change when Codex updates: run the isolated checks before upgrading production usage. Cross-Agent conversion transfers text and tool summaries, not images, attachments, hidden reasoning or execution state; it does not replay tools. External files still need accessible paths, and encrypted records may not work across providers. Tool full text is available on demand; full-text indexing retains tool summaries only. [Release notes and verification](docs/beta-release.md) document the boundaries.
 

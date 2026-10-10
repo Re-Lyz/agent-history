@@ -2,6 +2,8 @@
 
 [English](README.en.md) · **0.1.0-beta.1** · MIT 开源协议
 
+[下载 beta 源码包](https://github.com/Re-Lyz/agent-history/releases/tag/v0.1.0-beta.1) · [双平台 CI 验证](https://github.com/Re-Lyz/agent-history/actions/runs/38031469719)
+
 把本机 Codex 与 Claude Code 的历史集中到数据库：搜索、阅读 Markdown、选择启动命令和工作目录，然后在独立终端接续对话。支持单 Agent、多个账号及不同 Codex 登录连接。Agent 的安装、登录和模型调用由用户自己的 CLI 完成。
 
 ![使用合成历史的桌面截图](docs/images/demo.png)
@@ -13,6 +15,8 @@
 需要 **Python 3.11+、Tk、SQLite FTS5（含 trigram tokenizer）**。建议新建虚拟环境；Windows Python 需包含 Tcl/Tk，Linux 可先安装发行版的 Python、venv 和 Tk 包。在克隆或解压后的项目目录运行：
 
 ```text
+git clone https://github.com/Re-Lyz/agent-history.git
+cd agent-history
 python -m venv .venv
 ```
 
@@ -49,7 +53,7 @@ python install.py
 | 其他 Linux 发行版／桌面终端、原生 Wayland、真实 systemd 调度 | 尚未实测 |
 | macOS | 尚未支持／验证 |
 
-Python 3.11 是最低运行要求；完整本地回归使用 3.12。GitHub 工作流已配置 Windows／Ubuntu 回归，云端结果在仓库上传后确认，不能把配置文件当作已通过的证据。
+Python 3.11 是最低运行要求；完整本地回归使用 3.12。GitHub windows-latest／Ubuntu 22.04 的回归、源码包检查、临时用户首次使用及四项零请求原生 Codex 检查均已通过，见 [Actions 实际结果](https://github.com/Re-Lyz/agent-history/actions/runs/38031469719)。这不代表真实 Claude 交互或全部 Linux 桌面已验证。
 
 原生 Codex 恢复涉及 CLI 内部存储格式，**升级 Codex 后先运行隔离兼容检查**。跨 Codex 副本可保留原记录，但外部附件仍依赖原路径，加密内容可能无法被另一服务解码。Claude ↔ Codex 转换保留文字和工具摘要，省略图片、附件、隐藏推理与执行状态，不重放工具。工具全文可按需查看，全文索引只保留工具摘要。详细范围见 [发行说明](docs/beta-release.md)、[Linux](docs/linux.md)、[原生导入](docs/native-import.md) 和 [跨平台接续](docs/conversation-handoff.md)。
 

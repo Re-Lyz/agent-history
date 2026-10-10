@@ -2,7 +2,7 @@
 
 ## 0.1.0-beta.1 — 2026-10-10
 
-First public beta candidate. Publication and GitHub-hosted CI are pending.
+First public beta, under the MIT license. Windows / Ubuntu GitHub-hosted regression, packaging, isolated installation and native Codex checks passed. Release: `v0.1.0-beta.1`.
 
 - Local Codex / Claude history indexing, full-text search and optional MCP readers.
 - Desktop viewer with Markdown, code highlighting, search navigation, collapsible tool details, independently scrolling columns and sortable history.

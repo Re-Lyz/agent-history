@@ -1,6 +1,6 @@
 # 0.1.0-beta.1 发行说明与验证
 
-2026-10-10。源码已推送到 [Re-Lyz/agent-history](https://github.com/Re-Lyz/agent-history)，云端 CI 正在确认，尚未创建 beta tag／Release。按用户最终选择采用 MIT 协议，允许商业及非商业使用、修改和分发，保留版权与许可声明。
+2026-10-10。源码公开于 [Re-Lyz/agent-history](https://github.com/Re-Lyz/agent-history)，发行版本 [v0.1.0-beta.1](https://github.com/Re-Lyz/agent-history/releases/tag/v0.1.0-beta.1)。按用户最终选择采用 MIT 协议，允许商业及非商业使用、修改和分发，保留版权与许可声明。
 
 ## 发行内容
 
@@ -50,10 +50,13 @@ Linux 无桌面测试用 xvfb-run 包装真实 Tk 场景。first_use_check 从 Z
 | Linux 真实缓存 xterm | 中文／特殊参数、工作目录、环境、退出码 23、安装卸载及无桌面 CLI 通过 |
 | 公开候选全部可达历史／当前文件／beta ZIP | 扫描零命中；截图人工检查；本地开发旧历史仍有 4 处 HELP 私人路径，不拟公开 |
 | README、许可证和发行说明的本地链接 | 通过 |
-| GitHub-hosted CI／全新 OS／真实 Claude CLI 交互 | 尚未完成 |
+| GitHub-hosted windows-latest／Ubuntu 22.04 CI | 159 项回归（平台专用项跳过）、源码打包／审计、临时用户首次使用、四项原生 Codex 检查全部通过，见下方运行链接 |
+| 全新 OS 装机／真实 Claude CLI 交互 | 尚未完成 |
 
 已实测 Windows／Python 3.12 和 Ubuntu 20.04／WSL2／WSLg／Python 3.12.2／xterm，Codex CLI 0.159.2。Python 3.11 是最低要求，本地完整回归使用 3.12。Claude CLI 实际交互恢复、其他 Linux 发行版／终端、原生 Wayland、真实 systemd 调度和 macOS 尚未验收。界面中文，英文 README 不代表英文 UI。
 
 跨 Agent 仅迁移文字和工具摘要，省略图片、附件、隐藏推理和执行状态，不重放工具；工具全文读取与摘要检索范围不同。外部资源依赖原路径，加密记录可能无法跨服务解码。Codex 内部存储格式升级后先隔离验证。交付是源码 ZIP，需要 Python。
 
-Actions 已配置完整历史审计、双平台回归、打包／解压、临时用户首次使用、固定 Codex 版本的零请求原生检查和校验包上传。联网检查已确认 GitHub 登录有效，之前沙箱内的状态检查误报失效；公开源码已推送，CI 结果以实际 Actions 为准。创建 beta tag／Release 前需确认两平台 Actions 成功并启用私密漏洞报告。
+Actions 已完成双平台全流程，实际证据为 [运行 38031469719](https://github.com/Re-Lyz/agent-history/actions/runs/38031469719)，验证的代码提交为 `bf7741ffb42af0ac02b5acc88f6a4f575bf2885c`。首次云端运行修复了临时目录的 Windows 短／长路径比较、数百文件索引测试等待时间，以及 npm codex.cmd 的版本报告解析；保留全部功能断言。后续发行记录提交只改文档，使用 skip-ci 标记避免重复功能测试；源码／发行包内容审计与打包另行通过。
+
+公开仓库已启用私密漏洞报告。Release 提供源码 ZIP 和 SHA-256；仍需 Python／Tk，不能当作免运行环境的 EXE 使用。原本沙箱内的 gh 登录状态误报已由联网检查纠正。原开发历史未推送，公开仓库仅包含审计后的源码历史。
