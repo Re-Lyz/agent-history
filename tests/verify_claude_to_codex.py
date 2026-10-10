@@ -8,6 +8,7 @@ import faulthandler
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -32,7 +33,7 @@ def verify():
     original = ah.ROOT, ah.DATA, ah.CLAUDE_HOMES
     try:
         with tempfile.TemporaryDirectory(prefix='verify-claude-codex-') as temp:
-            root = Path(temp)
+            root = Path(temp).resolve()
             home = root / 'codex'
             home.mkdir()
             (home / 'config.toml').write_text('model="gpt-6.1-sol"\n[features]\nmemories=false\n', encoding='utf-8')
@@ -99,7 +100,7 @@ def verify():
                     if not again:
                         again = rpc.call('thread/turns/list', {'threadId': target_id, 'limit': 100, 'itemsView': 'full'})['data']
                     assert 'synthetic-marker-117' in texts(again) and '合成最终回答' in texts(again)
-                print(json.dumps(dict(version=subprocess.check_output(['codex', '--version'], text=True,
+                print(json.dumps(dict(version=subprocess.check_output([shutil.which('codex'), '--version'], text=True,
                                       env={**os.environ, 'CODEX_HOME': str(home)}).strip(),
                                       listed=True, resumed=True, independent=True, restarted=True,
                                       native_lock=True, trash_restored=True, tools_not_replayed=True,
