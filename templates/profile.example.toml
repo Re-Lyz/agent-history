@@ -1,0 +1,5 @@
+model = "gpt-6.1-sol"
+model_reasoning_effort = "high"
+
+# Omit model_provider for a normal ChatGPT/OpenAI login.
+# Keep authentication in this connection's CODEX_HOME; never copy another auth.json.

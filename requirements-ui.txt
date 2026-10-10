@@ -1,0 +1,3 @@
+# Desktop Markdown preview; core history CLI/MCP does not require these packages.
+markdown-it-py>=2.2,<5
+Pygments>=2.15,<3

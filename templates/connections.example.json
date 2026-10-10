@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "connections": {
+    "openai1": {"home": "../.codex-openai1", "launch_args": [], "sync_history": true},
+    "openai2": {"home": "../.codex-openai2", "launch_args": [], "sync_history": true},
+    "api": {"home": "../.codex-api", "launch_args": [], "key_env": "MY_CODEX_API_KEY", "sync_history": true},
+    "legacy": {"home": "../.codex", "history_only": true}
+  }
+}

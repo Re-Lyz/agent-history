@@ -1,0 +1,4 @@
+approval_policy = "on-request"
+sandbox_mode = "workspace-write"
+
+# install.ps1 configures agent-history for the selected Python and repository.

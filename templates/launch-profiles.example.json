@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "profiles": [
+    {
+      "id": "preferred-codex",
+      "name": "My Codex connection",
+      "type": "codex",
+      "connection": "CHANGE_ME_CONNECTION",
+      "args": [],
+      "cwd_policy": "chosen",
+      "env": {}
+    },
+    {
+      "id": "preferred-claude",
+      "name": "Claude Code",
+      "type": "claude",
+      "args": [],
+      "cwd_policy": "session",
+      "env": {}
+    },
+    {
+      "id": "custom-resume",
+      "name": "My resume script",
+      "type": "custom",
+      "program": "CHANGE_ME_ABSOLUTE_PATH.ps1",
+      "args": [],
+      "resume_args": ["-Session", "{session_id}"],
+      "resume_tools": ["codex"],
+      "cwd_policy": "chosen",
+      "env": {},
+      "enabled": false
+    },
+    {
+      "id": "custom-new",
+      "name": "My new-session command",
+      "type": "custom",
+      "program": "CHANGE_ME_PROGRAM",
+      "args": [],
+      "cwd_policy": "chosen",
+      "env": {},
+      "enabled": false
+    }
+  ]
+}
