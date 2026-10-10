@@ -450,7 +450,9 @@ class ViewerInteractionTests(unittest.TestCase):
         def interact(root):
             root.deiconify()
             tree = next(w for w in self.widgets() if isinstance(w, self.ttk.Treeview) and 'check' in w.cget('columns'))
-            self.wait(lambda: len(tree.get_children()) == 500)
+            # Initial indexing of 510 files on a shared Windows runner can
+            # exceed 5 seconds; this checks pagination, not indexing speed.
+            self.wait(lambda: len(tree.get_children()) == 500, timeout=30)
             iid = next(item for item in tree.get_children() if 'one.jsonl' in item)
             tree.selection_set(iid)
             root.update()
