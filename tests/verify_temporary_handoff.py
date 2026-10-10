@@ -38,7 +38,7 @@ def append(row, marker, timestamp):
 
 def verify():
     with tempfile.TemporaryDirectory(prefix='verify-temporary-handoff-') as temporary:
-        root = Path(temporary)
+        root = Path(temporary).resolve()
         if os.name != 'nt':
             # This verifies Claude JSONL and lifecycle, not the Claude CLI.
             stub = root / 'claude-stub'; stub.mkdir()

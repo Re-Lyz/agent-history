@@ -23,7 +23,7 @@ class AuditTests(unittest.TestCase):
 
     def test_deleted_historical_secret_and_private_artifact_are_detected(self):
         with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
+            root = Path(folder).resolve()
             def git(*args):
                 return subprocess.run(['git',*args],cwd=root,check=True,capture_output=True)
             git('init')

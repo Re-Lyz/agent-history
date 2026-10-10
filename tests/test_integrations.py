@@ -8,7 +8,7 @@ from integrations.install_mcp import install
 class IntegrationTests(unittest.TestCase):
     def test_mcp_and_hook_registration_preserves_other_tools_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as temporary:
-            base = Path(temporary)
+            base = Path(temporary).resolve()
             user, repo, shared = base / 'user', base / 'source', base / 'config'
             (user / '.claude').mkdir(parents=True)
             mcp_path = user / '.claude.json'

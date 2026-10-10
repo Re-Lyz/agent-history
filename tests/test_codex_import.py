@@ -31,7 +31,7 @@ def native_db(home):
 class NativeImportTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()
         self.a, self.b = self.root / 'a', self.root / 'b'
         for home in (self.a, self.b):
             (home / 'sessions').mkdir(parents=True)

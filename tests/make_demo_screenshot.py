@@ -21,7 +21,7 @@ def capture(output):
     import tkinter as tk
     from tkinter import ttk
     with tempfile.TemporaryDirectory(prefix='agent-history-demo-') as folder:
-        base=Path(folder)
+        base=Path(folder).resolve()
         shared,data,home=(base/name for name in ('config','data','codex'))
         shared.mkdir(); data.mkdir(); (home/'sessions').mkdir(parents=True)
         (shared/'connections.json').write_text(json.dumps(dict(connections=dict(

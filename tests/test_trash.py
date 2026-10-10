@@ -34,7 +34,7 @@ def age(path, seconds=3600):
 class Fixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()
         from tests.platform_fixture import programs
         programs(self, self.root)
         self.a, self.b = self.root / 'a', self.root / 'b'

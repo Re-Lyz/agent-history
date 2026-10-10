@@ -81,7 +81,7 @@ class InstallerTests(unittest.TestCase):
     def test_systemd_units_and_timers_are_owned_and_uninstalled(self):
         if os.name=='nt': self.skipTest('Linux systemd contract')
         with tempfile.TemporaryDirectory() as folder:
-            home=Path(folder)/'user'; prefix=Path(folder)/'install'
+            home=Path(folder).resolve()/'user'; prefix=Path(folder).resolve()/'install'
             with patch.object(install,'preflight',return_value=dict(python=sys.executable)):
                 spec=install.plan(prefix,home,sys.executable,collect_task=True,sync_task=True)
             with patch.object(install.subprocess,'run') as run:
@@ -95,7 +95,7 @@ class InstallerTests(unittest.TestCase):
                 self.assertTrue(any('disable' in call.args[0] for call in run.call_args_list))
     def test_uninstall_restores_only_owned_registration_and_keeps_later_edits(self):
         with tempfile.TemporaryDirectory() as folder:
-            home = Path(folder)/'user'; home.mkdir(); prefix = Path(folder)/'install'
+            home = Path(folder).resolve()/'user'; home.mkdir(); prefix = Path(folder).resolve()/'install'
             codex = home/'.codex/config.toml'; codex.parent.mkdir()
             original = 'model="test"\n[mcp_servers.other]\ncommand="other"\n'
             codex.write_text(original)
@@ -126,9 +126,9 @@ class InstallerTests(unittest.TestCase):
     @unittest.skipUnless(os.name == 'nt', 'Windows shortcut contract')
     def test_real_start_menu_shortcut_is_isolated_and_removed(self):
         with tempfile.TemporaryDirectory() as folder:
-            home=Path(folder)/'user'; prefix=Path(folder)/'install 中文 空格'
-            source=Path(folder)/'source 中文 空格'; source.mkdir()
-            output=Path(folder)/'entry-result.json'
+            home=Path(folder).resolve()/'user'; prefix=Path(folder).resolve()/'install 中文 空格'
+            source=Path(folder).resolve()/'source 中文 空格'; source.mkdir()
+            output=Path(folder).resolve()/'entry-result.json'
             (source/'history_ui.py').write_text('import os,json\nfrom pathlib import Path\n'+
                 'Path('+repr(str(output))+').write_text(json.dumps({key:os.environ[key] for key in '+
                 repr(['AGENT_HISTORY_SHARED_ROOT','AGENT_HISTORY_HOME'])+'}))\n',encoding='utf-8')
@@ -146,7 +146,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_base_install_is_repeatable_and_does_not_touch_agent_configs(self):
         with tempfile.TemporaryDirectory() as folder:
-            home=Path(folder)/'user'; prefix=Path(folder)/'install'
+            home=Path(folder).resolve()/'user'; prefix=Path(folder).resolve()/'install'
             with patch.object(install,'preflight',return_value=dict(python=sys.executable)):
                 spec=install.plan(prefix,home,sys.executable)
             spec['shortcuts']=[]
@@ -165,7 +165,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_integrations_are_independent_and_preserve_existing_settings(self):
         with tempfile.TemporaryDirectory() as folder:
-            home=Path(folder)/'user'; home.mkdir(); prefix=Path(folder)/'install'
+            home=Path(folder).resolve()/'user'; home.mkdir(); prefix=Path(folder).resolve()/'install'
             original=dict(other='preserve',mcpServers=dict(other=dict(command='other')))
             (home/'.claude.json').write_text(json.dumps(original))
             with patch.object(install,'preflight',return_value=dict(python=sys.executable)):

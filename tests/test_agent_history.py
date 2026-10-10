@@ -20,7 +20,7 @@ def codex_rollout(sid, texts, cwd='C:/项目'):
 class AgentHistoryTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
-        root = Path(self.tmp.name)
+        root = Path(self.tmp.name).resolve()
         self.root = root
         (root / 'shared').mkdir()
         (root / 'shared' / 'connections.json').write_text(json.dumps({'connections': {

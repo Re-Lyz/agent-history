@@ -11,7 +11,7 @@ import connections
 class ConnectionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         (self.root / 'connections.json').write_text('{"version": 1, "connections": {}}')
         self.home = self.root / 'account'
         self.home.mkdir()

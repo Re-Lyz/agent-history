@@ -21,7 +21,7 @@ from native_codex import CodexRPC
 
 def verify():
     with tempfile.TemporaryDirectory(prefix='verify-ui-resume-') as temporary:
-        root = Path(temporary)
+        root = Path(temporary).resolve()
         shared, source, target = (root / name for name in ('shared', 'source', 'target'))
         shared.mkdir()
         model = 'gpt-6.1-sol'

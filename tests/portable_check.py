@@ -11,7 +11,7 @@ import zipfile
 artifact=Path(sys.argv[1]).resolve()
 assert artifact.with_suffix(artifact.suffix+'.sha256').read_text().split()[0] == hashlib.sha256(artifact.read_bytes()).hexdigest()
 with tempfile.TemporaryDirectory(prefix='agent-history-portable-') as folder:
-    base=Path(folder)
+    base=Path(folder).resolve()
     with zipfile.ZipFile(artifact) as archive:
         names=archive.namelist()
         assert all('agent-history/'+name in names for name in ('LICENSE','NOTICE.md','VERSION','README.en.md','CHANGELOG.md'))

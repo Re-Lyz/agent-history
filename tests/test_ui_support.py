@@ -18,7 +18,7 @@ import ui_support as support
 class ViewerSupportTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.root = Path(self.temp.name)
+        self.root = Path(self.temp.name).resolve()
         self.program = self.root / 'fixture-cli'
         self.program.write_text('#!/bin/sh\nexit 0\n')
         self.program.chmod(0o755)

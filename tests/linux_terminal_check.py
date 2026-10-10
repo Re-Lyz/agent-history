@@ -23,7 +23,7 @@ if len(sys.argv) > 1:
     os.environ['AGENT_HISTORY_TERMINAL'] = json.dumps([sys.argv[1], '-e'])
 
 with tempfile.TemporaryDirectory(prefix='agent-history-linux-') as temporary:
-    root = Path(temporary)
+    root = Path(temporary).resolve()
     chosen = root / "中文 项目 '引号' $ &"
     chosen.mkdir()
     shared = root / 'config'; shared.mkdir()

@@ -32,7 +32,7 @@ class ViewerInteractionTests(unittest.TestCase):
             self.skipTest('Tk desktop unavailable: ' + str(error))
         self.tk, self.ttk, self.messagebox = tk, ttk, messagebox
         self.temp = tempfile.TemporaryDirectory()
-        self.path = Path(self.temp.name)
+        self.path = Path(self.temp.name).resolve()
         from tests.platform_fixture import programs
         programs(self, self.path)
         self.shared = self.path / 'shared'

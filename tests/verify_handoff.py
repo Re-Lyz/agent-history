@@ -29,7 +29,7 @@ def native_text(home, sid):
 
 def verify():
     with tempfile.TemporaryDirectory(prefix='verify-handoff-') as temporary:
-        root = Path(temporary)
+        root = Path(temporary).resolve()
         if os.name != 'nt':
             stub = root / 'claude-stub'; stub.mkdir()
             executable = stub / 'claude'
