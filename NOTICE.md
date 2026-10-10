@@ -1,10 +1,10 @@
 # License and third-party notices
 
-Required Notice: Copyright 2026 Re-Lyz and Agent History contributors
+Copyright (c) 2026 Re-Lyz and Agent History contributors
 
-Agent History is distributed under the unmodified [PolyForm Noncommercial License 1.0.0](LICENSE), SPDX identifier `PolyForm-Noncommercial-1.0.0`. Noncommercial use, modification and distribution are permitted under that license; keep LICENSE and this required notice with copies. Commercial use requires a separate permission from the rights holders. This is source-available software with a noncommercial restriction, not OSI-approved open source. The English LICENSE is authoritative.
+Agent History is distributed under the [MIT License](LICENSE), SPDX identifier `MIT`. Use, modification, distribution, sublicensing and commercial use are permitted. Keep the copyright and permission notice in copies or substantial portions of the software. The English LICENSE is authoritative.
 
-The license was obtained from the [official plain-text source](https://polyformproject.org/licenses/noncommercial/1.0.0.txt). Third-party components retain their own licenses; this project license does not relicense them.
+The standard license text is documented by the [Open Source Initiative](https://opensource.org/license/mit). Third-party components retain their own licenses; this project license does not relicense them.
 
 | Component | Use | License | Distributed in source ZIP? |
 |---|---|---|---|

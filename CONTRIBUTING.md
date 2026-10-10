@@ -1,6 +1,6 @@
 # Contributing
 
-Please read [LICENSE](LICENSE) before contributing. Contributions are offered under the project's PolyForm Noncommercial 1.0.0 license; retain third-party notices. Discuss a different licensing requirement before submitting code.
+Please read [LICENSE](LICENSE) before contributing. Contributions are offered under the project's MIT license; retain third-party notices. Discuss a different licensing requirement before submitting code.
 
 Use Python 3.11+ with Tk and SQLite FTS5/trigram. Clone into any directory, optionally create a virtual environment, and install `requirements-ui.txt`. From the repository root:
 

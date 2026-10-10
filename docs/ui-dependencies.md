@@ -18,7 +18,7 @@ python -m pip install -r requirements-ui.txt
 
 解析接口见 [markdown-it-py 文档](https://markdown-it-py.readthedocs.io/en/latest/using.html)，高亮接口见 [Pygments 文档](https://pygments.org/docs/quickstart/)。许可按上述验证版本随包附带的 LICENSE 核对；markdown-it-py 另包含上游 markdown-it 的 MIT 许可。安装范围为 markdown-it-py 2.2 至 4.x、Pygments 2.15 至 2.x；表中版本是此次实际验证环境，范围内其他版本仍需运行项目检查。
 
-源码发行只声明依赖，不复制这些包到仓库。未来制作含运行环境的便携包或安装包时，需包含实际分发组件的许可与版权声明，验证 Python／Tk／字体、上述模块及 Pygments 语言词法器是否完整收集。项目采用 PolyForm Noncommercial 1.0.0，允许非商业使用、修改和分发；第三方组件仍使用自己的许可证。详见 [LICENSE](../LICENSE) 和 [第三方清单](../NOTICE.md)。
+源码发行只声明依赖，不复制这些包到仓库。未来制作含运行环境的便携包或安装包时，需包含实际分发组件的许可与版权声明，验证 Python／Tk／字体、上述模块及 Pygments 语言词法器是否完整收集。项目采用 MIT 协议，允许商业及非商业使用、修改和分发；第三方组件仍使用自己的许可证。详见 [LICENSE](../LICENSE) 和 [第三方清单](../NOTICE.md)。
 
 Markdown 配置关闭 HTML 解析及自动资源加载。图片显示替代说明，HTTP(S) 与邮件链接只在用户点击后交给浏览器；相对路径和其他 URI 不作为命令执行。每条消息分别解析，代码复制保留解析后的代码内容，不附加围栏、语言标签或控件文字。
 

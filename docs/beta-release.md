@@ -1,6 +1,6 @@
 # 0.1.0-beta.1 发行说明与验证
 
-2026-10-10。状态：本地 beta 候选；尚未上传 GitHub、创建 tag 或公开 Release。采用 PolyForm Noncommercial 1.0.0，允许非商业使用、修改和分发，定位为非商业源码开放。
+2026-10-10。源码已推送到 [Re-Lyz/agent-history](https://github.com/Re-Lyz/agent-history)，云端 CI 正在确认，尚未创建 beta tag／Release。按用户最终选择采用 MIT 协议，允许商业及非商业使用、修改和分发，保留版权与许可声明。
 
 ## 发行内容
 
@@ -56,4 +56,4 @@ Linux 无桌面测试用 xvfb-run 包装真实 Tk 场景。first_use_check 从 Z
 
 跨 Agent 仅迁移文字和工具摘要，省略图片、附件、隐藏推理和执行状态，不重放工具；工具全文读取与摘要检索范围不同。外部资源依赖原路径，加密记录可能无法跨服务解码。Codex 内部存储格式升级后先隔离验证。交付是源码 ZIP，需要 Python。
 
-Actions 已配置完整历史审计、双平台回归、打包／解压、临时用户首次使用、固定 Codex 版本的零请求原生检查和校验包上传。当前无远程仓库且本机 gh 登录失效，云端 CI 尚未实际运行。发布前需连接并上传公开快照、确认两平台 Actions 成功、启用私密漏洞报告，然后创建 beta tag／Release。
+Actions 已配置完整历史审计、双平台回归、打包／解压、临时用户首次使用、固定 Codex 版本的零请求原生检查和校验包上传。联网检查已确认 GitHub 登录有效，之前沙箱内的状态检查误报失效；公开源码已推送，CI 结果以实际 Actions 为准。创建 beta tag／Release 前需确认两平台 Actions 成功并启用私密漏洞报告。

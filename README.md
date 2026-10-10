@@ -1,6 +1,6 @@
 # Agent History
 
-[English](README.en.md) · **0.1.0-beta.1** · 非商业源码开放
+[English](README.en.md) · **0.1.0-beta.1** · MIT 开源协议
 
 把本机 Codex 与 Claude Code 的历史集中到数据库：搜索、阅读 Markdown、选择启动命令和工作目录，然后在独立终端接续对话。支持单 Agent、多个账号及不同 Codex 登录连接。Agent 的安装、登录和模型调用由用户自己的 CLI 完成。
 
@@ -83,4 +83,4 @@ CLI 默认来源配置位置与直接源码 UI 一致；可传 `--shared-root �
 
 ## 许可证
 
-[PolyForm Noncommercial 1.0.0](LICENSE)：允许遵守条款的非商业使用、修改和分发，副本需保留许可证及必需声明；商业用途需另行获得许可。因此本项目是**非商业源码开放**，不宣称符合 OSI 开源定义。第三方组件许可见 [NOTICE](NOTICE.md)。
+[MIT](LICENSE)：允许使用、修改、分发、再授权及商业使用，副本或软件的重要部分需保留版权和许可声明。第三方组件保留自己的许可证，见 [NOTICE](NOTICE.md)。

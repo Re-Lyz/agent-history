@@ -1,6 +1,6 @@
 # Agent History
 
-[中文](README.md) · **0.1.0-beta.1** · Noncommercial source available
+[中文](README.md) · **0.1.0-beta.1** · MIT licensed
 
 A local desktop viewer and history index for Codex and Claude Code. Search conversations, read Markdown, select an Agent command and working directory, and resume in an independent terminal. Supports a single Agent as well as multiple Codex homes / login connections. Agent installation and authentication remain with the user's CLI.
 
@@ -52,4 +52,4 @@ Uninstall removes unchanged registrations owned by the installer and preserves h
 
 ## License
 
-[PolyForm Noncommercial 1.0.0](LICENSE) permits noncommercial use, modification and distribution under its terms. Keep the license and required notices with copies. Commercial use needs separate permission. This is noncommercial source-available software, not OSI-approved open source. Third-party components retain their own licenses; see [NOTICE](NOTICE.md).
+[MIT](LICENSE) permits use, modification, distribution, sublicensing and commercial use. Keep the copyright and permission notice in copies or substantial portions of the software. Third-party components retain their own licenses; see [NOTICE](NOTICE.md).
