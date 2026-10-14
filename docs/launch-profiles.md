@@ -23,6 +23,8 @@ python launch_profiles.py start-new my-profile --cwd "C:/My Project"
 
 `put` 接收一个配置对象文件，按 ID 新增或替换，原子保存。`list` 列出有效配置及字段错误，不打印环境变量值；坏条目不影响其他有效条目或内置入口。存在坏条目时拒绝通过 CLI 覆盖配置，需先修正文件。`check` 仅检查程序、目录、关联连接和环境引用，不启动模型；`new-plan` 仅预览，`start-new` 才打开独立终端。
 
+桌面 UI 的“新增对话”共用新会话适配器，可选择现有 Codex／Claude 入口及自定义配置，包括没有恢复模板的配置。只使用 `args`，不追加 `resume_args`；目录策略和环境引用沿用配置。准备时重新核对命令预览，并登记持久启动报告，终端退出后采集已接入的历史。新会话启动检查允许尚无原生恢复数据库的 Codex home，实际登录由终端完成。
+
 `plan` 检查恢复方案，`prepare` 发布必要副本并返回实际目标 ID／终端参数，两者均不打开终端或发送模型请求。`--source claude` 明确选择 Claude 来源；环境值不写入输出。Windows 下程序间以 UTF-8 读取 JSON 输出时，可设置 `PYTHONIOENCODING=utf-8`。
 
 ## 字段

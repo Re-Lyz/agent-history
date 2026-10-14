@@ -28,6 +28,7 @@
 !claude_to_codex.py
 !setup_backend.py
 !settings_ui.py
+!new_conversation_ui.py
 !launch_jobs.py
 !launch_job_runner.py
 !conversation_store.py

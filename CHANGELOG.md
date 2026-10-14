@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- New conversation dialog with selectable builtin commands / custom profiles, working directories, command preview, cancellation and retry.
+- New-session checks allow uninitialized Codex homes; independent terminal reports collect saved history after exit.
+
 ## 0.1.0-beta.1 — 2026-10-10
 
 First public beta, under the MIT license. Windows / Ubuntu GitHub-hosted regression, packaging, isolated installation and native Codex checks passed. Release: `v0.1.0-beta.1`.

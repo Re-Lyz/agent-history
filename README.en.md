@@ -28,6 +28,8 @@ python install.py
 
 Open **Agent History** from the Start / application menu. The first-use wizard selects existing Codex / Claude homes or custom directories. No personal aliases such as `codex1` are required. Before resuming, install and authenticate your chosen Agent CLI, then check its program, working directory and command preview in the right column. The interface currently uses Chinese labels; this file is an English entry point, not an English UI.
 
+To start a new conversation, click **新增对话**, select a builtin command or custom launch profile and a working directory, then click **打开终端并新建** after reviewing the command. No existing history is required. Profiles keep their directory policy and model settings; authentication happens in the terminal. Saved history from connected sources is collected after the command exits, or through Refresh History while it runs. Closing the viewer leaves the terminal running.
+
 Basic installation registers only the viewer. MCP, hooks, background jobs and desktop shortcuts are optional. Installation defaults to `~/.local/share/agent-history`; `--prefix`, `--python` and `--shared-root` override locations. Launchers refer to the source directory, so keep it after installation. The ZIP is source, not a standalone executable. For direct source execution, `python history_ui.py` reads source configuration from the checkout's parent by default; use `AGENT_HISTORY_SHARED_ROOT` to override. See the [first-use guide](docs/first-use.md) (Chinese).
 
 ## Features and limits

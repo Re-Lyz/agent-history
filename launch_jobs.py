@@ -21,10 +21,12 @@ def path(identity):
 
 def create(row, prepared, target, identity=None):
     identity = identity or uuid.uuid4().hex
+    row = row or dict(path='', tool=prepared.get('tool', 'custom'), id='')
     atomic_json(path(identity), dict(id=identity, version=1, state='prepared', created=now(), updated=now(),
         target=target, source_path=row['path'], source_tool=row['tool'], source_id=row['id'],
         session=prepared['session'], cwd=prepared['cwd'], kind=prepared['kind'], attempts=0,
-        sync_state='pending', error='', preparation_pid=os.getpid()))
+        sync_state='pending', error='', preparation_pid=os.getpid(),
+        history_roots=prepared.get('history_roots', [])))
     return identity
 
 
@@ -63,17 +65,18 @@ def reports(limit=25):
 
 def describe(item):
     labels = dict(prepared='已准备，等待终端启动', running='终端命令正在运行',
-                  exited='终端命令已结束', failed='终端命令失败', interrupted='运行中断，等待重新检查')
+                  exited='终端命令已结束', failed='终端命令失败', interrupted='运行中断，等待重新检查',
+                  cancelled='已取消启动')
     text = labels.get(item['state'], item['state'])
     if item.get('exit_code') is not None:
         text += ' · 退出码 ' + str(item['exit_code'])
     if item.get('error'):
         text += '\n' + item['error']
-    text += '\n登录状态和原生恢复结果以终端提示为准。'
+    text += '\n登录状态和' + ('新会话启动' if item.get('kind') == 'new' else '原生恢复') + '结果以终端提示为准。'
     if item.get('sync_state') == 'failed':
         text += '\n续聊采集失败，可重试：' + item.get('sync_error', '')
     elif item.get('sync_state') == 'collected':
-        text += '\n续聊内容已采集。'
+        text += '\n' + ('新会话历史采集已完成。' if item.get('kind') == 'new' else '续聊内容已采集。')
     if item.get('handoff_state') == 'cleaned':
         text += '\n已同步到 ' + item.get('durable_source', '') + '，临时副本已回收。'
     elif item.get('handoff_state') in ('preserved', 'pending'):
@@ -123,11 +126,17 @@ def mark_collected(report):
     for item in reports(limit=None):
         if item['source_path'] in report.get('skipped', []):
             continue
-        if not item.get('handoff_state') and item['state'] in ('exited', 'failed', 'interrupted') and item.get('sync_state') != 'collected':
+        if not item.get('handoff_state') and item['state'] in ('exited', 'failed', 'interrupted') and \
+                item.get('sync_state') not in ('collected', 'not-needed'):
             failed = collection_failed(item, report)
             update(item['id'], sync_state='failed' if failed else 'collected',
                    sync_error='当前会话读取失败，请检查历史来源后重试。' if failed else '')
 
 
 def collection_failed(item, report):
+    if item.get('kind') == 'new':
+        roots = [Path(root).resolve() for root in item.get('history_roots', [])]
+        return any(not roots or not error.get('path') or any(
+            Path(error['path']).resolve().is_relative_to(root) for root in roots)
+            for error in report['failed'])
     return any(error.get('path', item['source_path']) == item['source_path'] for error in report['failed'])

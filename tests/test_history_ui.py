@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import threading
 import time
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -123,10 +124,124 @@ class ViewerInteractionTests(unittest.TestCase):
             ui.run_ui()
         self.assertEqual(errors, [])
         if expect_launch:
-            start.assert_called_once()
+            self.assertEqual(start.call_count, int(expect_launch))
         else:
             start.assert_not_called()
         return start
+
+    @contextlib.contextmanager
+    def new_dialog_fixture(self, readiness=None):
+        dialogs = []
+        original = ui.new_conversation_ui.NewConversationDialog
+
+        def create(*args, **kwargs):
+            dialog = original(*args, **kwargs)
+            dialog.window.attributes('-alpha', 0.0)
+            dialog.window.overrideredirect(True)
+            dialogs.append(dialog)
+            return dialog
+
+        ready = dict(ready=True, message='fixture ready', issues=[])
+        with patch.object(ui.new_conversation_ui, 'NewConversationDialog', side_effect=create), \
+                patch.object(ui.launcher, 'new_readiness', side_effect=readiness or (lambda target: ready)):
+            yield dialogs
+
+    def test_new_conversation_works_without_history_and_starts_selected_builtin_once(self):
+        for path in (self.path / 'a' / 'sessions').glob('*.jsonl'):
+            path.unlink()
+        with contextlib.closing(ah.connect()) as db:
+            db.executescript('DELETE FROM messages; DELETE FROM files; DELETE FROM sessions;')
+        with self.new_dialog_fixture() as dialogs, patch.object(ui.settings_ui, 'SetupWizard') as setup:
+            def interact(root):
+                self.wait(lambda: setup.called)
+                self.button('新增对话').invoke()
+                dialog = dialogs[-1]
+                self.button('新增对话').invoke()
+                self.assertEqual(len(dialogs), 1)
+                dialog.cwd.set(str(self.path))
+                dialog.menu.invoke(list(dialog.options).index('claude'))
+                self.assertEqual(dialog.target, 'claude')
+                self.assertEqual(dialog.plan['args'], [])
+                dialog.start_button.invoke()
+                dialog.start()
+                self.wait(lambda: not dialog.alive())
+                report = ui.launch_jobs.reports()[0]
+                self.assertEqual((report['target'], report['kind'], report['source_id']), ('claude', 'new', ''))
+                self.assertEqual(report['cwd'], str(self.path))
+                root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+            start = self.exercise(interact, expect_launch=True)
+        self.assertTrue(start.call_args.kwargs['env']['AGENT_HISTORY_JOB_ID'])
+        self.assertEqual(support.load_preferences()['default_target'], 'claude')
+
+    def test_new_only_profile_preview_directory_validation_and_cancel_are_read_only(self):
+        ui.launcher.profiles.save([dict(id='new-only', name='仅新会话', type='custom', program=sys.executable,
+                                       args=['--version'])])
+        ready = dict(ready=True, message='fixture ready', issues=[])
+        def readiness(key):
+            return dict(ready=False, message='未找到程序', issues=['missing']) if key == 'b' else ready
+        with self.new_dialog_fixture(readiness) as dialogs:
+            def interact(root):
+                self.wait(lambda: len(next(w for w in self.widgets() if isinstance(w, self.ttk.Treeview)
+                                          and 'check' in w.cget('columns')).get_children()) == 2)
+                self.button('新增对话').invoke()
+                dialog = dialogs[-1]
+                self.assertEqual(dialog.menu.entrycget(list(dialog.options).index('b'), 'state'), 'disabled')
+                dialog.menu.invoke(list(dialog.options).index('profile:new-only'))
+                dialog.cwd.set(str(self.path / 'missing'))
+                self.assertIsNone(dialog.plan)
+                self.assertTrue(dialog.start_button.instate(['disabled']))
+                self.assertIn('工作目录不存在', dialog.message.get())
+                dialog.cwd.set(str(self.path))
+                self.assertEqual(dialog.plan['args'], ['--version'])
+                self.assertNotIn('--resume', dialog.plan['preview'])
+                dialog.copy_button.invoke()
+                self.assertEqual(root.clipboard_get(), dialog.plan['preview'])
+                root.tk.call(dialog.window.protocol('WM_DELETE_WINDOW'))
+                self.assertEqual(ui.launch_jobs.reports(), [])
+                root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+            self.exercise(interact)
+
+    def test_cancel_new_conversation_during_preparation_does_not_open_terminal(self):
+        started, release = threading.Event(), threading.Event()
+        original = ui.launcher.prepare_new
+        def prepare(*args):
+            result = original(*args)
+            started.set()
+            if not release.wait(5):
+                raise ValueError('fixture timeout')
+            return result
+        with self.new_dialog_fixture() as dialogs, patch.object(ui.launcher, 'prepare_new', side_effect=prepare):
+            def interact(root):
+                self.button('新增对话').invoke()
+                dialog = dialogs[-1]
+                dialog.cwd.set(str(self.path))
+                dialog.start_button.invoke()
+                self.wait(started.is_set)
+                dialog.close()
+                release.set()
+                self.wait(lambda: ui.launch_jobs.reports()[0]['state'] == 'cancelled')
+                root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+            try:
+                self.exercise(interact)
+            finally:
+                release.set()
+
+    def test_failed_new_terminal_is_reported_and_can_be_retried(self):
+        with self.new_dialog_fixture() as dialogs:
+            def interact(root):
+                self.button('新增对话').invoke()
+                dialog = dialogs[-1]
+                dialog.cwd.set(str(self.path))
+                ui.start_terminal.side_effect = [OSError('fixture terminal missing'), None]
+                dialog.start_button.invoke()
+                self.wait(lambda: not dialog.launching)
+                self.assertTrue(dialog.alive())
+                self.assertIn('fixture terminal missing', dialog.message.get())
+                self.assertEqual(ui.launch_jobs.reports()[0]['state'], 'failed')
+                dialog.start_button.invoke()
+                self.wait(lambda: not dialog.alive())
+                root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+            self.exercise(interact, expect_launch=2)
 
     def test_close_cancels_native_tcl_and_python_timers_and_destroys_window(self):
         fired = []

@@ -187,11 +187,11 @@ def preferred_target(row, targets, preferences):
     return ''
 
 
-def launch_readiness(target, user_home=None, program=None):
+def launch_readiness(target, user_home=None, program=None, *, new_session=False):
     """Inspect executable/config paths only; never authenticate or start a model turn."""
     if target.startswith('profile:'):
         import launch_backend
-        return launch_backend.profile_readiness(target)
+        return launch_backend.profile_readiness(target, new_session=new_session)
     issues = []
     user_home = Path(user_home) if user_home is not None else Path.home()
     import terminal_platform
@@ -219,7 +219,7 @@ def launch_readiness(target, user_home=None, program=None):
                 issues.append('缺少 codex-switch.ps1，请重新运行项目安装入口。')
             profile, common = (home / 'config.toml', None) if direct else (home / 'profile.toml', ah.ROOT / 'common.toml')
             for path in (profile, common):
-                if path is not None and not path.is_file():
+                if path is not None and not path.is_file() and not (new_session and direct):
                     issues.append(f'缺少配置文件：{path}')
             if profile.is_file() and (common is None or common.is_file()):
                 config = tomllib.loads(profile.read_text(encoding='utf-8-sig') + '\n\n' +
@@ -231,10 +231,11 @@ def launch_readiness(target, user_home=None, program=None):
 
                 if incomplete(config):
                     issues.append('连接配置仍包含待填写的 model／base_url。')
-            try:
-                ci.state_path(home)
-            except ValueError:
-                issues.append('连接尚未初始化，请先启动该连接并完成登录。')
+            if not new_session:
+                try:
+                    ci.state_path(home)
+                except ValueError:
+                    issues.append('连接尚未初始化，请先启动该连接并完成登录。')
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as error:
             issues.append(f'无法读取连接配置：{error}')
     return dict(ready=not issues, issues=issues,

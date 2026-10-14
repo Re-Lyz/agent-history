@@ -16,6 +16,18 @@ import ui_support as support
 
 
 class ViewerSupportTests(unittest.TestCase):
+    def test_new_session_allows_uninitialized_direct_connection_but_checks_program_and_configuration(self):
+        (self.shared / 'connections.json').write_text(json.dumps({'connections': {
+            'fresh': {'home': str(self.home), 'direct': True, 'program': str(self.program)}}}))
+        with patch('terminal_platform.issues', return_value=[]):
+            self.assertTrue(support.launch_readiness('fresh', new_session=True)['ready'])
+            self.assertFalse(support.launch_readiness('fresh')['ready'])
+            (self.home / 'config.toml').write_text('model = [broken')
+            self.assertFalse(support.launch_readiness('fresh', new_session=True)['ready'])
+            (self.home / 'config.toml').unlink()
+            self.program.unlink()
+            self.assertFalse(support.launch_readiness('fresh', new_session=True)['ready'])
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name).resolve()

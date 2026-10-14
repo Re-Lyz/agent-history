@@ -240,7 +240,7 @@ def main():
                 result = {name: value for name, value in result.items() if name not in ('profile', 'environment', 'env')}
                 result['env_names'] = list(get(key)['env'])
         elif args.command == 'start-new':
-            ready = backend.profile_readiness(key)
+            ready = backend.new_readiness(key)
             if not ready['ready']:
                 raise ValueError(ready['message'])
             plan = backend.prepare_new(key, args.cwd)

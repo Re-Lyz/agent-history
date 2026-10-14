@@ -34,6 +34,7 @@ from launch_backend import (file_messages, physical_row, transcript_stamp, launc
 import launch_backend as launcher
 import connections
 import settings_ui
+import new_conversation_ui
 import launch_jobs
 import conversation_store as conversations
 import conversation_titles as titles
@@ -270,6 +271,7 @@ def run_ui():
             self.readiness = {}
             self.launch_job = None
             self.last_launch_report = None
+            self.new_dialog = None
             root.title('Agent History')
             self.normal_geometry = support.fit_geometry(self.preferences['geometry'], root.winfo_screenwidth(),
                                                         root.winfo_screenheight())
@@ -359,6 +361,8 @@ def run_ui():
             self.audit_button.pack(side='right')
             ttk.Button(audit_bar, text='启动配置', command=self.manage_profiles).pack(side='right', padx=8)
             ttk.Button(audit_bar, text='配置历史来源', command=self.setup_sources).pack(side='right')
+            ttk.Button(audit_bar, text='新增对话', style='Accent.TButton',
+                       command=self.new_conversation).pack(side='right', padx=8)
 
             project_bar = ttk.Frame(root, padding=(16, 0, 16, 4))
             project_bar.pack(fill='x')
@@ -772,6 +776,57 @@ def run_ui():
 
         def manage_profiles(self):
             settings_ui.ProfileManager(self.root, self.settings_changed)
+
+        def new_conversation(self):
+            if self.new_dialog and self.new_dialog.alive():
+                self.new_dialog.window.lift()
+                return
+            cwd = self.cwd.get()
+            self.new_dialog = new_conversation_ui.NewConversationDialog(self.root, self.start_new,
+                target=self.preferences.get('default_target', ''),
+                cwd=cwd if cwd and Path(cwd).is_dir() else str(Path.home()), on_settings=self.manage_profiles)
+
+        def start_new(self, dialog, target, cwd, expected_plan):
+            if any(job[0] == 'launch' for job in self.jobs.values()):
+                dialog.finish('已有启动正在准备，请稍后重试。')
+                return
+
+            def prepare():
+                try:
+                    ready = launcher.new_readiness(target)
+                    if not ready['ready']:
+                        raise ValueError(ready['message'])
+                    return launcher.prepare_new(target, cwd, expected_plan), None
+                except Exception as error:
+                    return None, error
+
+            def done(result):
+                prepared, error = result
+                if error is not None:
+                    support.log_error('Preparing a new conversation', error)
+                    dialog.finish(error)
+                    self.busy.set('新会话未启动，请查看新增对话窗口的提示。')
+                    return
+                if not dialog.alive():
+                    launch_jobs.update(prepared['job'], state='cancelled', sync_state='not-needed')
+                    self.busy.set('已取消新会话启动')
+                    return
+                self.launch_job = prepared['job']
+                try:
+                    start_terminal(prepared['cwd'], prepared['inner'], env=prepared['env'])
+                except (OSError, ValueError) as error:
+                    launch_jobs.update(self.launch_job, state='failed', sync_state='not-needed',
+                                       error='无法打开终端；请检查终端程序后重试。')
+                    support.log_error('Opening a new conversation terminal', error)
+                    dialog.finish(error)
+                    self.busy.set('新会话终端未打开，可修改配置后重试。')
+                    return
+                self.preferences['default_target'] = target
+                self.preferences['project_targets'][support.project_key(prepared['cwd'])] = target
+                dialog.finish()
+                self.busy.set('新会话终端已打开；请在终端完成登录并开始对话')
+
+            self.background(prepare, done, label='正在准备新会话…', key='launch')
 
         def setup_sources(self):
             settings_ui.SetupWizard(self.root, self.settings_changed)

@@ -1,5 +1,6 @@
 """Terminal lifecycle persists outside Tk without recording credentials or transcript text."""
 import contextlib
+import base64
 import json
 import subprocess
 import sys
@@ -15,6 +16,48 @@ from tests.test_trash import Fixture
 
 
 class LaunchJobTests(Fixture):
+    def test_independent_new_session_runner_executes_synthetic_program_and_collects_after_exit(self):
+        from tests.test_trash import rollout
+        import launch_profiles
+        script = self.root / 'new conversation writer.py'
+        script.write_text('from pathlib import Path\nimport sys, base64\n'
+                          'Path(sys.argv[1]).write_bytes(base64.b64decode(sys.argv[2]))\n', encoding='utf-8')
+        transcript = self.a / 'sessions' / 'new-process.jsonl'
+        launch_profiles.save([dict(id='writer', type='custom', program=sys.executable,
+            args=[str(script), str(transcript), base64.b64encode(
+                rollout('new-process', '独立进程生成的新对话', self.cwd).encode('utf-8')).decode('ascii')])])
+        prepared = backend.prepare_new('profile:writer', self.cwd)
+        payload = base64.b64encode(json.dumps(dict(job=prepared['job'], inner=prepared['inner'])).encode()).decode()
+        environment = {**os.environ, **prepared['env'], 'HOME': str(self.root), 'USERPROFILE': str(self.root)}
+        result = subprocess.run([sys.executable, str(Path(runner.__file__)), payload], env=environment,
+            capture_output=True, timeout=25, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = jobs.read(prepared['job'])
+        self.assertEqual((report['state'], report['sync_state']), ('exited', 'collected'))
+        self.assertEqual(ah.resolve(self.db, 'new-process')['turns'], 1)
+        self.assertTrue(transcript.is_file())
+
+    def test_new_session_exit_collects_new_history_without_a_source_session(self):
+        from tests.test_trash import rollout
+        prepared = backend.prepare_new('a', self.cwd)
+        transcript = self.a / 'sessions' / 'brand-new.jsonl'
+
+        def execute(*args, **kwargs):
+            transcript.write_text(rollout('brand-new', '新增对话的第一条消息', self.cwd), encoding='utf-8')
+            return subprocess.CompletedProcess([], 0)
+
+        with patch.object(runner.subprocess, 'run', side_effect=execute):
+            self.assertEqual(runner.run(prepared['job'], ['fixture-new-command']), 0)
+        report = jobs.read(prepared['job'])
+        self.assertEqual((report['state'], report['sync_state']), ('exited', 'collected'))
+        self.assertIn('新会话', jobs.describe(report))
+        ah.collect(self.db)
+        self.assertEqual(ah.resolve(self.db, 'brand-new')['turns'], 1)
+        from history_ui import list_rows
+        self.assertIn('brand-new', [row['id'] for row in list_rows(self.db)])
+        self.assertFalse(jobs.collection_failed(report, dict(failed=[dict(path=str(self.b / 'other.jsonl'))])))
+        self.assertTrue(jobs.collection_failed(report, dict(failed=[dict(path=str(transcript))])))
+
     def test_pythonw_startup_failure_writes_log_and_requests_error_dialog(self):
         pythonw = Path(sys.executable).with_name('pythonw.exe')
         if os.name != 'nt' or not pythonw.is_file():

@@ -279,11 +279,11 @@ def codex_invocation(target, sid, extra):
     return script
 
 
-def profile_readiness(target):
-    return check_profile(profiles.get(target))
+def profile_readiness(target, *, new_session=False):
+    return check_profile(profiles.get(target), new_session=new_session)
 
 
-def check_profile(profile):
+def check_profile(profile, *, new_session=False):
     profile = profiles.validate(profile)
     issues = []
     issues.extend(terminal_platform.issues())
@@ -297,7 +297,7 @@ def check_profile(profile):
             issues.append(str(error))
     if profile['type'] == 'codex':
         import ui_support
-        issues.extend(ui_support.launch_readiness(profile['connection'], program=program)['issues'])
+        issues.extend(ui_support.launch_readiness(profile['connection'], program=program, new_session=new_session)['issues'])
     elif profile['type'] == 'claude' and not program and not shutil.which('claude'):
         issues.append('未找到 claude 程序。')
     if profile['cwd_policy'] == 'fixed' and not Path(profile['cwd']).expanduser().is_dir():
@@ -466,9 +466,27 @@ def test_launch(db, row, target, cwd):
     return dict(ready=True, preview=plan['preview'], message='启动检查通过；未启动 Agent 或发送模型请求。')
 
 
+def new_profile(target):
+    """Use the same configuration for builtin and user-defined new sessions."""
+    if target.startswith('profile:'):
+        return profiles.get(target)
+    if not entry_settings.load().get(target, {}).get('enabled', True):
+        raise ValueError('启动入口已停用。')
+    if target != CLAUDE:
+        entry = connections.load(ah.ROOT)['connections'].get(target)
+        if not entry or entry.get('history_only'):
+            raise ValueError('目标必须是可启动的已注册 Codex 连接。')
+    return profiles.validate(dict(id='builtin', type='claude' if target == CLAUDE else 'codex',
+                                  connection='' if target == CLAUDE else target))
+
+
+def new_readiness(target):
+    return check_profile(new_profile(target), new_session=True)
+
+
 def new_plan(target, cwd):
     """Construct a new-session command, including custom profiles without resume support."""
-    profile = profiles.get(target)
+    profile = new_profile(target)
     cwd = profiles.working_directory(profile, dict(cwd=cwd), cwd)
     values = dict(session_id='', source_session_id='', source='', connection=profile.get('connection', ''), cwd=cwd)
     args = profiles.expand(profile['args'], values)
@@ -480,17 +498,25 @@ def new_plan(target, cwd):
         entry = connections.load(ah.ROOT)['connections'][profile['connection']]
         if entry.get('direct') or os.name != 'nt':
             program, args, extra = entry.get('program') or 'codex', entry.get('launch_args', []) + extra, []
-    preview = 'cd ' + ps_quote(cwd) + '\n' + launch_runner.invocation(program, args)
+    quote = ps_quote if os.name == 'nt' else terminal_platform.shlex.quote
+    preview = 'cd ' + quote(cwd) + '\n' + launch_runner.invocation(program, args)
     if profile['type'] == 'codex' and not profile.get('program') and Path(program).suffix == '.ps1':
         preview = 'cd ' + ps_quote(cwd) + '\n' + codex_invocation(profile['connection'], None, extra)
     launch_runner.command(program, args)
-    return dict(cwd=cwd, program=program, args=args, codex_args=extra,
+    if profile['type'] == 'codex' and (profile.get('program') or os.name != 'nt' or
+            connections.load(ah.ROOT)['connections'][profile['connection']].get('direct')):
+        home = str(dict(ah.codex_homes())[profile['connection']])
+        preview = 'cd ' + quote(cwd) + '\n' + ('$env:CODEX_HOME=' + quote(home) + '\n' if os.name == 'nt'
+                  else 'CODEX_HOME=' + quote(home) + ' ') + launch_runner.invocation(program, args)
+    return dict(cwd=cwd, program=program, args=args, codex_args=extra, tool=profile['type'],
                 preview=preview, env_names=list(profile['env']))
 
 
-def prepare_new(target, cwd):
+def prepare_new(target, cwd, expected_plan=None):
     plan = new_plan(target, cwd)
-    profile = profiles.get(target)
+    if expected_plan is not None and plan != expected_plan:
+        raise ValueError('启动配置或工作目录已变化，请重新查看预览后启动。')
+    profile = new_profile(target)
     environment = profiles.environment(profile)
     if profile['type'] == 'codex' and (profile.get('program') or os.name != 'nt' or
             connections.load(ah.ROOT)['connections'][profile['connection']].get('direct')):
@@ -499,5 +525,16 @@ def prepare_new(target, cwd):
     if plan['codex_args']:
         script = codex_invocation(profile['connection'], None, plan['codex_args'])
         inner = ['-EncodedCommand', base64.b64encode(script.encode('utf-16le')).decode('ascii')]
-    return dict(cwd=plan['cwd'], inner=inner, env=environment,
-                session=None, kind='new')
+    roots = []
+    if profile['type'] == 'codex':
+        roots = [str(dict(ah.codex_homes())[profile['connection']])]
+    elif profile['type'] == 'claude':
+        roots = [str(home / 'projects') for home in ah.CLAUDE_HOMES]
+    prepared = dict(cwd=plan['cwd'], inner=inner, env=environment, history_roots=roots,
+                    session=None, kind='new', tool=profile['type'])
+    import launch_jobs
+    identity = launch_jobs.create(None, prepared, target)
+    environment.update(AGENT_HISTORY_JOB_ID=identity, AGENT_HISTORY_HOME=str(ah.DATA),
+                       AGENT_HISTORY_SHARED_ROOT=str(ah.ROOT))
+    prepared['job'] = identity
+    return prepared

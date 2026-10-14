@@ -20,6 +20,42 @@ from tests.test_trash import Fixture
 
 
 class LaunchBackendTests(Fixture):
+    def test_new_builtin_commands_do_not_resume_or_import_existing_history(self):
+        import launch_jobs
+        for target in ('a', 'claude'):
+            with self.subTest(target=target):
+                before = self.path.read_bytes()
+                plan = backend.new_plan(target, self.cwd)
+                self.assertNotIn('-Session', plan['args'])
+                self.assertNotIn('--resume', plan['args'])
+                self.assertNotIn('-Session', plan['preview'])
+                self.assertNotIn('--resume', plan['preview'])
+                prepared = backend.prepare_new(target, self.cwd, plan)
+                self.assertIsNone(prepared['session'])
+                self.assertEqual(prepared['env']['AGENT_HISTORY_JOB_ID'], prepared['job'])
+                report = launch_jobs.read(prepared['job'])
+                self.assertEqual((report['kind'], report['source_path'], report['source_id']), ('new', '', ''))
+                self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(self.db.execute('SELECT count(*) FROM codex_imports').fetchone()[0], 0)
+        registry = json.loads((ah.ROOT / 'connections.json').read_text())
+        registry['connections']['a'].update(direct=True, program=sys.executable, launch_args=['--version'])
+        (ah.ROOT / 'connections.json').write_text(json.dumps(registry))
+        direct = backend.prepare_new('a', self.cwd)
+        self.assertEqual(direct['env']['CODEX_HOME'], str(self.a))
+        self.assertEqual(backend.new_plan('a', self.cwd)['args'], ['--version'])
+        with self.assertRaisesRegex(ValueError, '已注册'):
+            backend.new_plan('old', self.cwd)
+
+    def test_new_preview_checks_configuration_changes_and_new_only_fixed_directory(self):
+        profiles.save([dict(id='new', type='custom', program=sys.executable, args=['--version'],
+                            cwd_policy='fixed', cwd=self.cwd)])
+        plan = backend.new_plan('profile:new', str(self.root / 'missing'))
+        self.assertEqual(plan['cwd'], self.cwd)
+        profiles.save([dict(id='new', type='custom', program=sys.executable, args=['-V'])])
+        with self.assertRaisesRegex(ValueError, '已变化'):
+            backend.prepare_new('profile:new', self.cwd, plan)
+        self.assertEqual(list((ah.DATA / 'launch-jobs').glob('*.json')), [])
+
     def test_explicit_copy_handoff_preserves_continuation_and_bulk_sync_excludes_it(self):
         row = dict(ah.resolve(self.db, 's1'))
         first = ci.import_session(self.db, row, self.a, 'b', self.b)
