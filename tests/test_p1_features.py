@@ -179,6 +179,105 @@ class InstallerTests(unittest.TestCase):
 
 
 class NewViewerTests(viewer_tests.ViewerInteractionTests):
+    def test_right_column_selection_copy_and_readonly_updates(self):
+        def interact(root):
+            root.deiconify()
+            tree = next(w for w in self.widgets() if isinstance(w, self.ttk.Treeview) and 'check' in w.cget('columns'))
+            self.wait(lambda: len(tree.get_children()) == 2)
+            tree.selection_set(next(i for i in tree.get_children() if 'two.jsonl' in i))
+            root.update()
+            self.wait_layout()
+            title = next(w for w in self.widgets() if w.winfo_name() == 'action_title')
+            first, fifth = title.bbox('1.0'), title.bbox('1.0+5c')
+            y = first[1] + first[3] // 2
+            self.target_widget().focus_force()
+            root.update()
+            title.event_generate('<Button-1>', x=first[0], y=y)
+            title.event_generate('<B1-Motion>', x=fifth[0], y=y, state=0x100)
+            title.event_generate('<ButtonRelease-1>', x=fifth[0], y=y)
+            title.event_generate('<Control-c>')
+            self.assertEqual(root.clipboard_get(), title.get('1.0', '1.0+5c'))
+            self.assertEqual(root.focus_get(), title)
+            for name in ('action_title', 'action_info', 'action_status', 'action_preview'):
+                widget = next(w for w in self.widgets() if w.winfo_name() == name)
+                original = widget.get('1.0', 'end-1c')
+                self.assertTrue(original, name)
+                widget.focus_force()
+                widget.tag_add('sel', '1.0', '1.0+5c')
+                widget.event_generate('<<Copy>>')
+                self.assertEqual(root.clipboard_get(), original[:5])
+                widget.event_generate('<Control-a>')
+                widget.event_generate('<Control-c>')
+                self.assertEqual(root.clipboard_get(), original)
+                widget.insert('1.0', 'must not edit')
+                self.assertEqual(widget.get('1.0', 'end-1c'), original)
+                widget.variable.set(original)
+                self.assertTrue(widget.tag_ranges('sel'))
+                widget.menu.invoke(1)
+                self.assertEqual(root.clipboard_get(), original)
+            info = next(w for w in self.widgets() if w.winfo_name() == 'action_info')
+            info.variable.set('更新后的中文信息\n完整路径')
+            root.update()
+            info.copy_all()
+            self.assertEqual(root.clipboard_get(), '更新后的中文信息\n完整路径')
+            self.assertGreaterEqual(int(info.cget('height')), 2)
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        self.exercise(interact)
+
+    def test_collapsed_tools_yield_to_events_and_do_not_replan_on_detail_load(self):
+        ui = viewer_tests.ui
+        records = [dict(type='session_meta', payload=dict(id='two', cwd=str(self.path), source='cli'))]
+        for index in range(160):
+            records.extend([
+                dict(type='response_item', payload=dict(type='function_call', call_id=str(index), name='exec', arguments='{}')),
+                dict(type='response_item', payload=dict(type='function_call_output', call_id=str(index), output='工具结果'))])
+        path = self.path / 'a/sessions/two.jsonl'
+        path.write_text(''.join(json.dumps(row, ensure_ascii=False) + '\n' for row in records), encoding='utf-8')
+        with contextlib.closing(ah.connect()) as db:
+            ah.collect(db)
+        panels, heartbeats = [], []
+        original_panel = ui.ToolPanel
+        def panel(*args):
+            app = args[0]
+            if not panels:
+                app.root.after(0, lambda: heartbeats.append(len(app.tool_panels)))
+            # Make a batch boundary deterministic without asserting wall time.
+            time.sleep(0.002)
+            result = original_panel(*args)
+            panels.append(result)
+            return result
+        def interact(root):
+            tree = next(w for w in self.widgets() if isinstance(w, self.ttk.Treeview) and 'check' in w.cget('columns'))
+            self.wait(lambda: len(tree.get_children()) == 2)
+            tree.selection_set(next(i for i in tree.get_children() if 'two.jsonl' in i))
+            self.wait(lambda: len(panels) == 160)
+            self.assertTrue(heartbeats)
+            self.assertLess(heartbeats[0], 160)
+            self.assertTrue(all(item.body is None and item.text is None for item in panels))
+            self.assertLessEqual(sum(isinstance(w, self.tk.Text) for w in self.widgets()), 8)
+            app = panels[0].app
+            self.wait_layout()
+            with patch.object(ui, 'launch_plan', wraps=ui.launch_plan) as plan:
+                for _ in range(10):
+                    app.update_preview()
+                root.update()
+                self.assertEqual(plan.call_count, len(app.target_labels))
+                plan.reset_mock()
+                with patch.object(app, 'background', wraps=app.background) as background:
+                    panels[0].toggle()
+                    panels[0].toggle()
+                    panels[0].toggle()
+                    self.wait(lambda: panels[0].loaded)
+                    self.assertEqual(background.call_count, 1)
+                plan.assert_not_called()
+            with patch.object(app, 'begin_text', wraps=app.begin_text) as begin:
+                app.refresh()
+                root.update()
+                begin.assert_not_called()
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        with patch.object(ui, 'ToolPanel', side_effect=panel):
+            self.exercise(interact)
+
     def test_global_search_discards_old_result_and_locates_older_message(self):
         import history_ui as ui
         entered=threading.Event(); release=threading.Event(); finished=threading.Event()
@@ -246,10 +345,14 @@ class NewViewerTests(viewer_tests.ViewerInteractionTests):
             tree.selection_set(next(i for i in tree.get_children() if 'two.jsonl' in i)); root.update()
             self.wait(lambda: any(isinstance(w,self.ttk.Button) and str(w.cget('text')).startswith('▸ exec') for w in self.widgets()))
             button=next(w for w in self.widgets() if isinstance(w,self.ttk.Button) and str(w.cget('text')).startswith('▸ exec'))
+            self.assertEqual(button.master.winfo_children(), [button])
+            self.assertEqual(button.master.cget('bg'), viewer_tests.ui.PALETTE['card'])
+            self.assertEqual(button.cget('style'), 'ToolToggle.TButton')
             button.invoke()
             self.wait(lambda: any(isinstance(w,self.tk.Text) and '完整输出' in w.get('1.0','end') for w in self.widgets()))
             detail=next(w for w in self.widgets() if isinstance(w,self.tk.Text) and '完整输出' in w.get('1.0','end'))
             self.assertIn('x'*9000,detail.get('1.0','end'))
+            self.assertEqual(detail.cget('highlightthickness'), 0)
             mode=next(w for w in self.widgets() if w.winfo_name()=='preview_mode')
             mode.set('原文'); mode.event_generate('<<ComboboxSelected>>'); root.update()
             mode.set('Markdown'); mode.event_generate('<<ComboboxSelected>>'); root.update()

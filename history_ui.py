@@ -40,6 +40,7 @@ import conversation_store as conversations
 import conversation_titles as titles
 import tool_details
 from tool_panel import ToolPanel
+from ui_widgets import SelectableText
 
 
 def review_candidates():
@@ -212,6 +213,12 @@ def run_ui():
                     bordercolor=P['line'], borderwidth=1, relief='solid', width=-1)
         s.configure('Danger.TButton', width=-1, padding=(12, 6))
         s.map('Soft.TButton', background=[('active', P['accent_soft'])])
+        s.configure('ToolToggle.TButton', background=P['card'], foreground=P['muted'],
+                    padding=(6, 4), borderwidth=0, relief='flat', width=-1)
+        s.layout('ToolToggle.TButton', [('Button.padding', {'sticky': 'nswe', 'children': [
+            ('Button.label', {'sticky': 'nswe'})]})])
+        s.map('ToolToggle.TButton', background=[('active', P['accent_soft'])],
+              foreground=[('active', P['text'])])
         s.configure('TEntry', fieldbackground=P['card'], bordercolor=P['line'], lightcolor=P['line'],
                     darkcolor=P['line'], padding=6)
         s.map('TEntry', bordercolor=[('focus', P['accent'])], lightcolor=[('focus', P['accent'])])
@@ -537,10 +544,10 @@ def run_ui():
             self.action_canvas = canvas
             self.title_var, self.info = tk.StringVar(value='选择一条对话'), tk.StringVar()
             ttk.Button(inner, text='修改对话名称', command=self.rename_current).pack(anchor='e')
-            ttk.Label(inner, textvariable=self.title_var, style='Title.TLabel', wraplength=290,
-                      justify='left').pack(anchor='w', fill='x')
-            ttk.Label(inner, textvariable=self.info, style='Muted.TLabel', wraplength=290,
-                      justify='left').pack(anchor='w', fill='x', pady=(6, 0))
+            SelectableText(inner, variable=self.title_var, name='action_title',
+                           font=(FONT, 12, 'bold'), bg=P['card'], fg=P['text']).pack(fill='x')
+            SelectableText(inner, variable=self.info, name='action_info',
+                           font=(FONT, 9), bg=P['card'], fg=P['muted']).pack(fill='x', pady=(6, 0))
             tk.Frame(inner, bg=P['line'], height=1).pack(fill='x', pady=16)
             ttk.Label(inner, text='启动命令', style='Section.TLabel').pack(anchor='w')
             self.target = tk.StringVar()
@@ -554,8 +561,8 @@ def run_ui():
             self.version_box.bind('<<ComboboxSelected>>', self.select_version)
             self.version_options = {}
             self.launch_status = tk.StringVar()
-            ttk.Label(inner, textvariable=self.launch_status, style='Muted.TLabel', wraplength=280,
-                      justify='left').pack(fill='x', pady=(0, 8))
+            SelectableText(inner, variable=self.launch_status, name='action_status',
+                           font=(FONT, 9), bg=P['card'], fg=P['muted']).pack(fill='x', pady=(0, 8))
             ttk.Label(inner, text='工作目录', style='Section.TLabel').pack(anchor='w')
             row = tk.Frame(inner, bg=P['card'])
             row.pack(fill='x', pady=(4, 12))
@@ -565,9 +572,9 @@ def run_ui():
             ttk.Entry(row, textvariable=self.cwd).pack(side='left', fill='x', expand=True)
             ttk.Label(inner, text='将执行', style='Section.TLabel').pack(anchor='w')
             self.preview = tk.StringVar()
-            self.preview_label = tk.Label(inner, textvariable=self.preview, wraplength=280, justify='left',
-                                          anchor='w', font=('Consolas', 9), bg=P['code_bg'], fg=P['text'],
-                                          padx=10, pady=8)
+            self.preview_label = SelectableText(inner, variable=self.preview, name='action_preview',
+                                                font=('Consolas', 9), bg=P['code_bg'], fg=P['text'],
+                                                padx=10, pady=8)
             self.preview_label.pack(fill='x', pady=(4, 14))
             actions = tk.Frame(inner, bg=P['card'])
             actions.pack(fill='x', pady=(0, 8))
@@ -587,12 +594,12 @@ def run_ui():
             self.with_copies = tk.BooleanVar(value=True)
             ttk.Checkbutton(inner, text='同时删除关联副本', variable=self.with_copies,
                             style='Card.TCheckbutton').pack(anchor='w')
-            ttk.Label(inner, text='包括导入到其他连接或 Claude 的副本。',
-                      style='Muted.TLabel').pack(fill='x', pady=(4, 0))
+            SelectableText(inner, text='包括导入到其他连接或 Claude 的副本。', font=(FONT, 9),
+                           bg=P['card'], fg=P['muted']).pack(fill='x', pady=(4, 0))
             self.delete_button = ttk.Button(inner, text='删除这条对话', style='Soft.TButton', command=self.delete_current)
             self.delete_button.pack(fill='x', pady=(8, 0))
-            ttk.Label(inner, text=f'删除后在回收站保留 {trash.RETENTION_DAYS} 天，可随时恢复。',
-                      style='Muted.TLabel').pack(anchor='w', pady=(8, 0))
+            SelectableText(inner, text=f'删除后在回收站保留 {trash.RETENTION_DAYS} 天，可随时恢复。',
+                           font=(FONT, 9), bg=P['card'], fg=P['muted']).pack(fill='x', pady=(8, 0))
             pane.add(right, weight=2)
             # Labels in the action card wrap to its current width.
             wrapped = [w for w in inner.winfo_children() if isinstance(w, (ttk.Label, tk.Label))]
@@ -662,7 +669,7 @@ def run_ui():
                       style='Muted.TLabel').pack(side='right')
             detail_body = tk.Frame(outer, bg=P['card'])
             detail_body.pack(side='bottom', fill='x', padx=12, pady=(0, 12))
-            self.trash_details = tk.Text(detail_body, height=7, wrap='word', state='disabled', bg=P['code_bg'],
+            self.trash_details = tk.Text(detail_body, name='trash_details', height=7, wrap='word', state='disabled', bg=P['code_bg'],
                                          fg=P['text'], font=(FONT, 10), relief='flat', padx=12, pady=8)
             detail_scroll = ttk.Scrollbar(detail_body, command=self.trash_details.yview)
             self.trash_details.configure(yscrollcommand=detail_scroll.set)
@@ -688,12 +695,12 @@ def run_ui():
             return outer
 
         # -------- background work
-        def background(self, work, done=None, *, label='处理中…', key=None):
+        def background(self, work, done=None, *, label='处理中…', key=None, refresh_preview=True):
             if key and any(job[0] == key for job in self.jobs.values()):
                 return  # repeated clicks do not start the same operation again
             self.job_serial += 1
             serial = self.job_serial
-            self.jobs[serial] = (key, label)
+            self.jobs[serial] = (key, label, refresh_preview)
             self.busy.set(label)
             if key == 'audit':
                 self.audit_button.state(['disabled'])
@@ -728,7 +735,8 @@ def run_ui():
                     restoring = any(j[0] == 'restore' for j in self.jobs.values())
                     for button in (self.restore_button, self.purge_button):
                         button.state(['disabled'] if restoring else ['!disabled'])
-                    self.update_preview()
+                    if len(completed_job) < 3 or completed_job[2]:
+                        self.update_preview(immediate=True)
                     if completed_job[0] == 'test-launch' and not error:
                         self.launch_status.set(result['message'])
                     if self.launch_job and completed_job[0] in ('launch', 'handoff-sync'):
@@ -885,7 +893,7 @@ def run_ui():
                 project = support.project_key(rows[0]['cwd']) if rows else ''
                 if project:
                     self.preferences['project_targets'][project] = target
-            self.update_preview()
+            self.update_preview(immediate=True)
 
         def copy_preview(self):
             self.root.clipboard_clear()
@@ -1099,7 +1107,8 @@ def run_ui():
             self.busy.set(f'{len(rows)} 条')
             self.update_checks()
             if selected in self.rows:
-                self.tree.selection_set(selected)
+                if self.tree.selection() != (selected,):
+                    self.tree.selection_set(selected)
                 self.tree.focus(selected)
                 self.tree.yview_moveto(list_position)
             self.on_select()
@@ -1244,6 +1253,13 @@ def run_ui():
             if request is not None and request != getattr(self, 'render_request', 0):
                 return
             if request is None:
+                cached = getattr(self, 'reader_cache', None)
+                view = (self.current_iid, cached[0]['path'] if cached else None,
+                        self.reader_stamp, self.message_limit,
+                        self.preview_mode.get(), self.find_query.get())
+                if view == getattr(self, 'reader_view', None):
+                    return
+                self.reader_view = view
                 self.render_request = getattr(self, 'render_request', 0) + 1
             request = self.render_request
             count = len(self.reader_messages)
@@ -1263,7 +1279,8 @@ def run_ui():
                                     key = (element.text, element.language)
                                     highlights[key] = tuple(markdown.highlighted(*key))
                     return result, highlights
-                self.background(prepare, lambda result: self.show_messages(position, result, request, anchor), label='准备对话排版…')
+                self.background(prepare, lambda result: self.show_messages(position, result, request, anchor),
+                                label='准备对话排版…', refresh_preview=False)
                 return
             self.message_count.set(f'已显示 {shown} / {count} 条消息 · 工具可展开详情')
             self.more_messages.state(['!disabled'] if shown < count else ['disabled'])
@@ -1297,7 +1314,7 @@ def run_ui():
                                     yield from self.markdown_renderer.iter_render(row['text'] or '',
                                         prepared[0].get(index), prepared[1])
                                 else:
-                                    self.markdown_renderer.render(row['text'] or '')
+                                    yield from self.markdown_renderer.iter_render(row['text'] or '')
                                 self.text.insert('end', '\n', 'body')
                             else:
                                 self.text.insert('end', chunk, tag)
@@ -1314,7 +1331,7 @@ def run_ui():
                 try:
                     while True:
                         next(iterator)
-                        if large and time.perf_counter() >= deadline:
+                        if time.perf_counter() >= deadline:
                             self.text.configure(state='disabled')
                             self.root.after(1, batch)
                             return
@@ -1527,6 +1544,7 @@ def run_ui():
                 self.on_select()
 
         def set_text(self, parts, position=None):
+            self.reader_view = None
             self.render_request = getattr(self, 'render_request', 0) + 1
             self.begin_text()
             for tag, chunk in parts:
@@ -1552,7 +1570,7 @@ def run_ui():
             else:
                 self.text.yview(position)
 
-        def current_plan(self, db=None):
+        def current_plan(self, db=None, plans=None):
             rows = self.selected()
             if len(rows) != 1:
                 raise ValueError('请选择一条对话。')
@@ -1561,23 +1579,37 @@ def run_ui():
                 raise ValueError('请选择启动命令。')
             if self.reader_stamp is None or transcript_stamp(rows[0]) != self.reader_stamp:
                 raise ValueError('会话已变化，请刷新历史后核对新增内容再启动。')
+            if plans is not None and target in plans:
+                return rows[0], plans[target]
             if db is not None:
                 return rows[0], launch_plan(db, rows[0], target, self.cwd.get())
             with contextlib.closing(ah.connect()) as db:
                 return rows[0], launch_plan(db, rows[0], target, self.cwd.get())
 
-        def update_preview(self):
+        def update_preview(self, immediate=False):
+            if immediate:
+                self.refresh_launch_preview()
+                return
+            if getattr(self, 'preview_job', None) is None:
+                self.preview_job = self.root.after_idle(self.refresh_launch_preview)
+
+        def refresh_launch_preview(self):
+            if getattr(self, 'preview_job', None) is not None:
+                self.root.after_cancel(self.preview_job)
+            self.preview_job = None
             with contextlib.closing(ah.connect()) as db:
                 self.show_launch_preview(db)
 
         def show_launch_preview(self, db):
             self.target_menu.delete(0, 'end')
             rows = self.selected()
+            plans = {}
             for name, label in self.target_labels.items():
                 reason, description = '', '请先选择对话'
                 if rows:
                     try:
                         option = launch_plan(db, rows[0], name, self.cwd.get())
+                        plans[name] = option
                         description = option.get('description', '恢复选中版本')
                         if rows[0].get('logical') and rows[0].get('branches', 0) > 1:
                             reason = '存在多个分支，请先在版本选择中选择一个。'
@@ -1591,7 +1623,7 @@ def run_ui():
                 self.target_menu.add_radiobutton(label=text, value=label, variable=self.target,
                                                 state='disabled' if reason else 'normal', command=self.target_changed)
             try:
-                _, plan = self.current_plan(db)
+                _, plan = self.current_plan(db, plans)
                 current = self.selected()[0]
                 if current.get('logical') and current.get('branches', 0) > 1:
                     raise ValueError('存在多个续聊分支，请先选择要继续的版本。')

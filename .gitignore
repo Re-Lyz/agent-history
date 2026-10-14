@@ -20,6 +20,7 @@
 !trash.py
 !history_ui.py
 !ui_support.py
+!ui_widgets.py
 !markdown_preview.py
 !requirements-ui.txt
 !launch_backend.py

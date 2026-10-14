@@ -44,6 +44,8 @@ python tests/verify_native.py --source-session UUID_OR_PREFIX --trash
 
 `test_p1_features.py` 覆盖逻辑重命名／标题搜索、接续与删除恢复保留名称、并行工具 ID 和完整输出／变化检测、已有入口显示管理、过期后台搜索丢弃及较早消息自动定位、重复安装／可选集成／卸载归属、Windows 实际快捷方式和 Linux systemd 单位文件。
 
+右栏交互覆盖只读文字选择、Ctrl+A／Ctrl+C、右键复制、动态内容更新和自适应高度；合成 160 组工具验证收起时不创建详情文本框、短工具消息也分批让出事件循环、同轮启动预览计算合并、读取工具不重算启动计划，以及刷新未变正文不重建排版。性能回归验证行为和控件数量，不以机器相关的耗时阈值判定成功。
+
 Linux 可运行 `python tests/linux_check.py`；它要求真实 Tk 桌面并运行完整回归，CI 使用 xvfb-run。`linux_terminal_check.py` 是显式运行的真实终端验证：传入 xterm 完整路径或设置 AGENT_HISTORY_TERMINAL，检查中文／特殊参数、环境、目录、退出报告、无桌面 CLI 和安装卸载。该脚本会打开测试终端，只执行临时记录程序，不启动 Agent。
 
 `linux_prepare.py` 为本机验证使用的可选准备脚本，明确执行时才从官方 npm 包下载 Codex 0.159.2 及安装隔离 Markdown 依赖到用户缓存，不安装到系统位置。原生脚本需要 PATH 中实际可运行的 Codex；Linux 的 Claude 往返验证使用 Claude 可执行占位和合成 JSONL，未验证 Claude CLI 的实际交互。所有 verify 脚本都不发送模型请求。

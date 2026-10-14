@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Lazy tool-detail widgets, incremental rendering for all conversations, reuse of unchanged previews and coalesced launch-plan refreshes.
+- Selectable, readonly right-column text with keyboard / context-menu copying; remove dark tool-toggle backgrounds and borders.
 - New conversation dialog with selectable builtin commands / custom profiles, working directories, command preview, cancellation and retry.
 - New-session checks allow uninitialized Codex homes; independent terminal reports collect saved history after exit.
 

@@ -94,7 +94,8 @@ class ViewerInteractionTests(unittest.TestCase):
 
     def statuses(self):
         return [str(self.root.getvar(w.cget('textvariable'))) for w in self.widgets()
-                if isinstance(w, self.ttk.Label) and w.cget('textvariable')]
+                if isinstance(w, self.ttk.Label) and w.cget('textvariable')] + [
+                    w.get('1.0', 'end-1c') for w in self.widgets() if isinstance(w, ui.SelectableText)]
 
     def wait(self, predicate, timeout=5):
         deadline = time.monotonic() + timeout
@@ -111,7 +112,7 @@ class ViewerInteractionTests(unittest.TestCase):
         self.wait(lambda: not any(
             name in str(self.root.tk.call('after', 'info', job))
             for job in self.root.tk.call('after', 'info')
-            for name in ('place_sashes', 'finish', 'sync_region')))
+            for name in ('place_sashes', 'finish', 'sync_region', '_fit_height')))
 
     def exercise(self, interact, expect_launch=False):
         errors = []
@@ -620,8 +621,8 @@ class ViewerInteractionTests(unittest.TestCase):
             root.setvar(cwd.cget('textvariable'), str(self.path))
             root.update()
             self.assertTrue(self.button('打开终端并继续').instate(['disabled']))
-            labels = [root.getvar(w.cget('textvariable')) for w in self.widgets()
-                      if isinstance(w, self.tk.Label) and w.cget('textvariable')]
+            labels = [w.get('1.0', 'end-1c') for w in self.widgets()
+                      if isinstance(w, ui.SelectableText)]
             self.assertTrue(any('会话已变化' in label for label in labels))
             root.tk.call(root.protocol('WM_DELETE_WINDOW'))
         self.exercise(interact)
@@ -800,13 +801,13 @@ class ViewerInteractionTests(unittest.TestCase):
             root.update()
             pane = next(w for w in self.widgets() if isinstance(w, self.ttk.PanedWindow))
             canvas = next(w for w in self.widgets() if isinstance(w, self.tk.Canvas))
-            title = next(w for w in self.widgets() if isinstance(w, self.ttk.Label) and w.cget('style') == 'Title.TLabel')
+            title = next(w for w in self.widgets() if w.winfo_name() == 'action_title')
             target = self.target_widget()
             reader = next(w for w in self.widgets() if isinstance(w, self.tk.Text) and 'body' in w.tag_names())
             root.geometry('1100x640+0+0')
             root.update()
             pane.sashpos(1, pane.winfo_width() - 300)
-            root.setvar(title.cget('textvariable'), '很长的中文标题和路径 ' * 120)
+            title.variable.set('很长的中文标题和路径 ' * 120)
             self.wait(lambda: canvas.yview()[1] < 0.8)
             self.wait_layout()
             initial = canvas.yview()
@@ -832,14 +833,15 @@ class ViewerInteractionTests(unittest.TestCase):
             scrollbar = next(w for w in canvas.master.winfo_children() if isinstance(w, self.ttk.Scrollbar))
             self.assertTrue(scrollbar.winfo_ismapped())
             self.assertGreater(scrollbar.winfo_width(), 0)
-            wrap = title.cget('wraplength')
+            wrap = title.winfo_width()
             pane.sashpos(1, pane.winfo_width() - 240)
-            self.wait(lambda: title.cget('wraplength') < wrap)
-            self.assertLess(title.cget('wraplength'), wrap)
+            self.wait(lambda: title.winfo_width() < wrap)
+            self.assertLess(title.winfo_width(), wrap)
             self.assertTrue(self.button('浏览').winfo_ismapped())
-            root.setvar(title.cget('textvariable'), '短标题')
+            title.variable.set('短标题')
             root.geometry('1440x1600+0+0')
             self.wait(lambda: int(canvas.itemcget(canvas.find_all()[0], 'width')) == canvas.winfo_width())
+            self.wait_layout()
             self.assertLess(float(canvas.bbox('all')[3]), canvas.winfo_height(),
                             (canvas.yview(), canvas.bbox('all'), canvas.winfo_height()))
             self.assertEqual(canvas.yview(), (0.0, 1.0),
@@ -971,7 +973,7 @@ class ViewerInteractionTests(unittest.TestCase):
             self.wait(lambda: len(recycle.get_children()) == 1)
             recycle.selection_set(manifest['id'])
             root.update()
-            details = next(w for w in self.widgets() if isinstance(w, self.tk.Text) and 'body' not in w.tag_names())
+            details = next(w for w in self.widgets() if w.winfo_name() == 'trash_details')
             self.assertIn('[原会话] a · two', details.get('1.0', 'end'))
             self.assertIn(str(path), details.get('1.0', 'end'))
             self.assertIn(project_path, details.get('1.0', 'end'))
