@@ -21,7 +21,7 @@ class ConversationTests(Fixture):
             return actual_read(row)
         with patch.object(store, 'read_native', side_effect=unreadable_copy):
             with self.assertRaisesRegex(ValueError, '部分平台版本读取失败'):
-                backend.prepare_launch(self.db, dict(original, logical=True), 'claude', self.cwd)
+                backend.prepare_launch(self.db, dict(original, logical=True), 'claude', self.cwd, policy='legacy')
         self.assertEqual(self.db.execute('SELECT count(*) FROM imports').fetchone()[0], 0)
 
     def test_failed_first_snapshot_is_hidden_until_successful_retry(self):
@@ -147,7 +147,7 @@ class ConversationTests(Fixture):
             self.assertTrue(Path(copied['path']).exists())
 
     def launch(self, row, target):
-        prepared = backend.prepare_launch(self.db, row, target, self.cwd)
+        prepared = backend.prepare_launch(self.db, row, target, self.cwd, policy='legacy')
         ah.collect(self.db)
         return dict(ah.resolve(self.db, prepared['session']))
 
@@ -211,7 +211,7 @@ class ConversationTests(Fixture):
         cid = source['conversation']
         self.assertEqual(len(store.tips(self.db, cid)), 2)
         with self.assertRaisesRegex(ValueError, '多个续聊分支'):
-            backend.prepare_launch(self.db, dict(returned, logical=True), 'b', self.cwd)
+            backend.prepare_launch(self.db, dict(returned, logical=True), 'b', self.cwd, policy='legacy')
         self.assertNotIn('原连接也续聊了', self.text(returned))
 
     def test_partial_rewrite_deleted_and_restore_do_not_duplicate_or_resurrect(self):

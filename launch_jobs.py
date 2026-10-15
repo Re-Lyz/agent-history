@@ -78,7 +78,8 @@ def describe(item):
     elif item.get('sync_state') == 'collected':
         text += '\n' + ('新会话历史采集已完成。' if item.get('kind') == 'new' else '续聊内容已采集。')
     if item.get('handoff_state') == 'cleaned':
-        text += '\n已同步到 ' + item.get('durable_source', '') + '，临时副本已回收。'
+        text += ('\n已保存最新主会话并清理已接替的旧文件。' if item.get('single_head') else
+                 '\n已同步到 ' + item.get('durable_source', '') + '，临时副本已回收。')
     elif item.get('handoff_state') in ('preserved', 'pending'):
         text += '\n临时副本保留，等待安全同步／清理。'
     if item.get('durable_session'):
@@ -126,7 +127,7 @@ def mark_collected(report):
     for item in reports(limit=None):
         if item['source_path'] in report.get('skipped', []):
             continue
-        if not item.get('handoff_state') and item['state'] in ('exited', 'failed', 'interrupted') and \
+        if not item.get('handoff_state') and not item.get('single_head') and item['state'] in ('exited', 'failed', 'interrupted') and \
                 item.get('sync_state') not in ('collected', 'not-needed'):
             failed = collection_failed(item, report)
             update(item['id'], sync_state='failed' if failed else 'collected',

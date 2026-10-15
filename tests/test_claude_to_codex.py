@@ -132,7 +132,9 @@ class ClaudeToCodexTests(Fixture):
         plan = backend.launch_plan(self.db, self.session, 'profile:native', str(chosen))
         self.assertEqual(plan['kind'], 'claude-codex-import')
         self.assertIn('图片与附件不迁移', plan['preview'])
-        prepared = backend.prepare_launch(self.db, self.session, 'profile:native', str(chosen))
+        import handoff_lifecycle
+        with patch.object(handoff_lifecycle, 'claude_running', return_value=False):
+            prepared = backend.prepare_launch(self.db, self.session, 'profile:native', str(chosen))
         self.assertNotEqual(prepared['session'], self.session['id'])
         if os.name == 'nt':
             self.assertEqual(prepared['inner'][2:4], ['b', '-Session'])

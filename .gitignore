@@ -35,6 +35,7 @@
 !conversation_store.py
 !conversation_merge.py
 !handoff_lifecycle.py
+!single_conversation.py
 !maintenance.py
 !conversation_titles.py
 !entry_settings.py

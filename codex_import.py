@@ -55,6 +55,22 @@ def config(home):
     return result
 
 
+def same_path(left, right):
+    """Codex can persist Windows extended-length paths after a native resume."""
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        def normalized(value):
+            value = str(Path(value).resolve())
+            if os.name == 'nt':
+                if value.startswith('\\\\?\\UNC\\'):
+                    value = '\\\\' + value[8:]
+                elif value.startswith('\\\\?\\'):
+                    value = value[4:]
+            return os.path.normcase(os.path.normpath(value))
+        return normalized(left) == normalized(right)
+
+
 def source_row(home, sid):
     try:
         with contextlib.closing(readonly(state_path(home))) as db:

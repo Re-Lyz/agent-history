@@ -41,7 +41,7 @@ class LifecycleTests(Fixture):
 
     def prepare(self, row=None, target='b'):
         row = row or dict(ah.resolve(self.db, 's1'))
-        prepared = backend.prepare_launch(self.db, row, target, self.cwd)
+        prepared = backend.prepare_launch(self.db, row, target, self.cwd, policy='legacy')
         ah.collect(self.db)
         return prepared, dict(ah.resolve(self.db, prepared['session']))
 
@@ -202,7 +202,7 @@ class LifecycleTests(Fixture):
 
     def test_unowned_import_and_native_session_are_never_automatically_retired(self):
         copied = ci.import_session(self.db, ah.resolve(self.db, 's1'), self.a, 'b', self.b)
-        prepared = backend.prepare_launch(self.db, dict(ah.resolve(self.db, 's1')), 'a', self.cwd)
+        prepared = backend.prepare_launch(self.db, dict(ah.resolve(self.db, 's1')), 'a', self.cwd, policy='legacy')
         jobs.update(prepared['job'], state='exited', exit_code=0)
         self.assertIsNone(lifecycle.finish(self.db, prepared['job']))
         self.assertTrue(Path(copied['path']).exists())

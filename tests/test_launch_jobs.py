@@ -96,11 +96,11 @@ with patch.object(tkinter, 'Tk', side_effect=tkinter.TclError('synthetic startup
             yield False
         with patch.object(runner.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)), \
                 patch.object(ah, 'collect_lock', busy):
-            self.assertEqual(runner.run(prepared['job'], ['-Command', 'fixture']), 0)
+            self.assertEqual(runner.run(prepared['job'], ['-Command', 'fixture']), 1)
         report = jobs.read(prepared['job'])
-        self.assertEqual(report['state'], 'exited')
+        self.assertEqual(report['state'], 'failed')
         self.assertEqual(report['sync_state'], 'failed')
-        self.assertIn('TimeoutError', report['sync_error'])
+        self.assertIn('TimeoutError', report['error'])
 
     def test_real_terminal_runner_propagates_script_exit_code_without_agent(self):
         row = dict(ah.resolve(self.db, 's1'))
@@ -150,9 +150,9 @@ with patch.object(tkinter, 'Tk', side_effect=tkinter.TclError('synthetic startup
     def test_failed_spawn_is_reported_and_sync_failure_retry_is_visible(self):
         row = dict(ah.resolve(self.db, 's1'))
         prepared = backend.prepare_launch(self.db, row, 'a', self.cwd)
-        import conversation_store
+        import single_conversation
         with patch.object(runner.subprocess, 'run', side_effect=OSError('fixture')), \
-                patch.object(conversation_store, 'sync_all', side_effect=ValueError('fixture')):
+                patch.object(single_conversation, 'finish', side_effect=ValueError('fixture')):
             runner.run(prepared['job'], ['-Command', 'fixture'])
         report = jobs.read(prepared['job'])
         self.assertEqual(report['state'], 'failed')
@@ -165,5 +165,7 @@ with patch.object(tkinter, 'Tk', side_effect=tkinter.TclError('synthetic startup
         with patch.object(jobs, 'process_alive', return_value=False):
             jobs.reconcile()
         self.assertEqual(jobs.read(prepared['job'])['state'], 'interrupted')
+        import handoff_lifecycle
+        handoff_lifecycle.retry_pending(self.db)
         jobs.mark_collected(dict(failed=[]))
         self.assertEqual(jobs.read(prepared['job'])['sync_state'], 'collected')

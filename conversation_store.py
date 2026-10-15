@@ -42,11 +42,22 @@ CREATE TABLE IF NOT EXISTS temporary_handoffs(
  origin_version TEXT NOT NULL, origin_revision TEXT NOT NULL,
  temporary_version TEXT UNIQUE, target TEXT NOT NULL, cwd TEXT NOT NULL,
  state TEXT NOT NULL, final_revision TEXT, durable_version TEXT,
- cleanup_path TEXT, error TEXT NOT NULL DEFAULT '', temporary_row TEXT, durable_row TEXT);
+ cleanup_path TEXT, error TEXT NOT NULL DEFAULT '', temporary_row TEXT, durable_row TEXT,
+ policy TEXT NOT NULL DEFAULT 'legacy');
+CREATE TABLE IF NOT EXISTS conversation_runs(
+ conversation TEXT PRIMARY KEY, job TEXT UNIQUE NOT NULL, version TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS conversation_retirements(
+ job TEXT NOT NULL, version TEXT NOT NULL, snapshot TEXT NOT NULL, saved TEXT NOT NULL,
+ state TEXT NOT NULL DEFAULT 'planned', PRIMARY KEY(job,version));
 '''
 
 
 def ensure(db):
+    db.execute('''CREATE TABLE IF NOT EXISTS conversation_runs(
+        conversation TEXT PRIMARY KEY, job TEXT UNIQUE NOT NULL, version TEXT NOT NULL)''')
+    db.execute('''CREATE TABLE IF NOT EXISTS conversation_retirements(
+        job TEXT NOT NULL, version TEXT NOT NULL, snapshot TEXT NOT NULL, saved TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'planned', PRIMARY KEY(job,version))''')
     db.execute('''CREATE TABLE IF NOT EXISTS conversation_merges(
         source_version TEXT NOT NULL, target_version TEXT NOT NULL,
         source_events TEXT NOT NULL, target_events TEXT NOT NULL,
@@ -58,6 +69,9 @@ def ensure(db):
     for column in ('stamp', 'event_ids'):
         if column not in columns:
             db.execute('ALTER TABLE conversation_versions ADD COLUMN ' + column + ' TEXT')
+    handoff_columns = {column[1] for column in db.execute('PRAGMA table_info(temporary_handoffs)')}
+    if handoff_columns and 'policy' not in handoff_columns:
+        db.execute("ALTER TABLE temporary_handoffs ADD COLUMN policy TEXT NOT NULL DEFAULT 'legacy'")
     db.commit()
 
 

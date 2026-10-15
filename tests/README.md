@@ -68,7 +68,16 @@ python tests/verify_handoff.py
 
 该脚本只用系统临时目录中的合成会话，通过首次配置 API 和启动检查后，执行 Codex → Claude → Codex 及已续聊副本再跨 Codex 连接，核对原生列出／resume／新增文字读回／重启、来源不变；不发送模型请求。Claude 新增回合为合成记录，未执行交互式 Claude CLI。P0 的逐项证据与实际验证边界见 [验收记录](../docs/p0-verification.md)。
 
-P1-14 临时接续验证：
+单主会话接续验证：
+
+```shell
+python -m unittest tests.test_single_conversation -v
+python tests/verify_single_conversation.py
+```
+
+验证同连接不复制、跨 Agent／连接正常结束后只保留一个可续聊原生文件、启动准备与独立终端进程的重复／过期任务拦截、合并签名回收、并行修改保留、原生锁、异常退出、验证失败、清理中断和重试。原生脚本使用隔离临时用户、合成 Claude JSONL、真实 Codex list／resume／重启读回和独立退出进程，零模型请求；不验证真实 Claude 模型执行。备份快照仍独立存在。
+
+P1-14 升级前任务的兼容验证（显式 legacy 策略）：
 
 ```shell
 python -m unittest tests.test_handoff_lifecycle -v

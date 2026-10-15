@@ -65,7 +65,7 @@ class LaunchBackendTests(Fixture):
                 content=[dict(type='input_text', text='副本中的新增问题') ])), ensure_ascii=False) + '\n')
         ah.collect(self.db)
         selected = dict(ah.resolve(self.db, first['session']))
-        prepared = backend.prepare_launch(self.db, selected, 'a', self.cwd)
+        prepared = backend.prepare_launch(self.db, selected, 'a', self.cwd, policy='legacy')
         self.assertNotIn(prepared['session'], ('s1', first['session']))
         mapped = self.db.execute('SELECT dst_path FROM codex_imports WHERE dst_key=?',
                                  ('codex:' + prepared['session'],)).fetchone()
@@ -159,12 +159,12 @@ class LaunchBackendTests(Fixture):
         self.assertEqual(plan['kind'], 'claude-import')
         self.assertIn('example-model', plan['preview'])
         self.assertIn('图片', plan['preview'])
-        prepared = backend.prepare_launch(self.db, row, 'profile:claude-profile', self.cwd)
+        prepared = backend.prepare_launch(self.db, row, 'profile:claude-profile', self.cwd, policy='legacy')
         self.assertNotEqual(prepared['session'], row['id'])
         plan = backend.launch_plan(self.db, row, 'profile:codex-profile', self.cwd)
         self.assertIn("'s1'" if os.name == 'nt' else 's1', plan['preview'])
         self.assertNotIn('<目标会话ID>', plan['preview'])
-        prepared = backend.prepare_launch(self.db, row, 'profile:codex-profile', self.cwd)
+        prepared = backend.prepare_launch(self.db, row, 'profile:codex-profile', self.cwd, policy='legacy')
         self.assertEqual(prepared['env']['CODEX_HOME'], str(self.a))
         profiles.save([dict(id='readonly', name='invalid', type='codex', connection='old')])
         with self.assertRaisesRegex(ValueError, '可启动'):

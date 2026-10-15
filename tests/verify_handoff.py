@@ -69,21 +69,21 @@ def verify():
                                     [dict(tool='claude', name='Claude', home=str(claude_home))])
             ready = backend.test_launch(db, original, 'profile:setup_a', str(root))
             assert ready['ready']
-            prepared = backend.prepare_launch(db, original, 'claude', str(root))
+            prepared = backend.prepare_launch(db, original, 'claude', str(root), policy='legacy')
             ah.collect(db)
             claude = dict(ah.resolve(db, prepared['session']))
             with Path(claude['path']).open('a', encoding='utf-8') as stream:
                 for index, (role, text) in enumerate([('user', 'synthetic-claude-added'), ('assistant', 'synthetic-claude-answer')]):
                     stream.write(json.dumps(dict(type=role, uuid='added-' + str(index), sessionId=claude['id'],
                         cwd=str(root), timestamp=timestamp, message=dict(content=text, model='fixture-model'))) + '\n')
-            returned = backend.prepare_launch(db, claude, 'a', str(root))
+            returned = backend.prepare_launch(db, claude, 'a', str(root), policy='legacy')
             assert returned['session'] != sid
             text = native_text(homes['a'], returned['session'])
             assert 'synthetic-handoff-original' in text and 'synthetic-claude-added' in text
             assert ah.IMPORT_MARK not in text
             ah.collect(db)
             selected = dict(ah.resolve(db, returned['session']))
-            transferred = backend.prepare_launch(db, selected, 'b', str(root))
+            transferred = backend.prepare_launch(db, selected, 'b', str(root), policy='legacy')
             assert transferred['session'] not in (sid, returned['session'])
             text = native_text(homes['b'], transferred['session'])
             assert 'synthetic-handoff-original' in text and 'synthetic-claude-added' in text

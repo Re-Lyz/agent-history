@@ -962,9 +962,14 @@ def run_ui():
                     identity = None if allow_branch else latest_job
                     if selected:
                         member = conversations.lookup(db, selected)
-                        owner = db.execute('SELECT id FROM temporary_handoffs WHERE temporary_version=? OR durable_version=?',
+                        owner = db.execute("SELECT id FROM temporary_handoffs WHERE temporary_version=? OR durable_version=? "
+                                           "ORDER BY (state='cleaned'), rowid DESC LIMIT 1",
                                            (member['id'], member['id'])).fetchone() if member else None
-                        if owner:
+                        reservation = db.execute('SELECT job FROM conversation_runs WHERE conversation=?',
+                                                 (member['conversation'],)).fetchone() if member else None
+                        if reservation:
+                            identity = reservation['job']
+                        elif owner:
                             identity = owner['id']
                     if allow_branch and not identity:
                         raise ValueError('请先选择要保存的临时续聊分支。')
@@ -978,7 +983,7 @@ def run_ui():
                 message = f"同步完成 {outcome['completed']} 项；仍待处理 {outcome['pending']} 项，详情见启动记录。"
                 self.launch_status.set(message)
                 self.busy.set(message)
-            self.background(work, done, label='正在保存续聊并清理临时副本…', key='handoff-sync')
+            self.background(work, done, label='正在保存主对话并清理已接替的旧文件…', key='handoff-sync')
 
         # -------- history list and batch selection
         def sort_list(self, column):
@@ -1604,6 +1609,15 @@ def run_ui():
             self.target_menu.delete(0, 'end')
             rows = self.selected()
             plans = {}
+            launch_reason = ''
+            if len(rows) == 1:
+                member = conversations.lookup(db, rows[0])
+                if member:
+                    import single_conversation
+                    try:
+                        single_conversation.latest(db, dict(member))
+                    except ValueError as error:
+                        launch_reason = str(error)
             for name, label in self.target_labels.items():
                 reason, description = '', '请先选择对话'
                 if rows:
@@ -1611,8 +1625,7 @@ def run_ui():
                         option = launch_plan(db, rows[0], name, self.cwd.get())
                         plans[name] = option
                         description = option.get('description', '恢复选中版本')
-                        if rows[0].get('logical') and rows[0].get('branches', 0) > 1:
-                            reason = '存在多个分支，请先在版本选择中选择一个。'
+                        reason = launch_reason
                     except (ValueError, OSError) as error:
                         reason = str(error)
                 else:
@@ -1625,8 +1638,8 @@ def run_ui():
             try:
                 _, plan = self.current_plan(db, plans)
                 current = self.selected()[0]
-                if current.get('logical') and current.get('branches', 0) > 1:
-                    raise ValueError('存在多个续聊分支，请先选择要继续的版本。')
+                if launch_reason:
+                    raise ValueError(launch_reason)
                 self.preview.set(plan['preview'])
                 self.preview_label.configure(fg=P['text'], bg=P['code_bg'])
                 self.copy_button.state(['!disabled'])

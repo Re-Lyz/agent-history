@@ -113,6 +113,8 @@ class ReviewFixTests(Fixture):
         with patch.object(jobs, 'process_alive', return_value=False):
             jobs.reconcile()
         self.assertEqual(jobs.read(old)['state'], 'interrupted')
+        import handoff_lifecycle
+        handoff_lifecycle.retry_pending(self.db)
         jobs.mark_collected(dict(failed=[]))
         self.assertEqual(jobs.read(old)['sync_state'], 'collected')
         with ThreadPoolExecutor(max_workers=4) as pool:

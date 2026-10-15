@@ -36,7 +36,7 @@ Basic installation registers only the viewer. MCP, hooks, background jobs and de
 
 - Search, project filtering, sortable columns, Markdown and highlighted code, message navigation and collapsible / scrolling tool details.
 - Logical conversation names and configurable launch profiles, programs, argument arrays, favorites and default launch entries.
-- Native Codex resume across homes, text-based Claude-to-Codex conversion, temporary cross-Agent handoffs with durable return versions.
+- One managed Agent per logical conversation: native resume in the same connection; cross-Agent handoffs promote the latest target and retire verified, fully covered older transcripts. Interrupted tasks preserve files for recovery. Revision backups remain separate; existing parallel branches must be merged first.
 - Recoverable deletion with active-session / writer-lock protection; optional stdlib MCP history readers.
 
 Locally verified on Windows / Python 3.12 and Ubuntu 20.04 / WSL2 / WSLg / Python 3.12.2 / xterm, using Codex CLI 0.159.2. [GitHub-hosted Windows / Ubuntu 22.04 CI](https://github.com/Re-Lyz/agent-history/actions/runs/38031469719) also passed regressions, release packaging, temporary-user installation and all four zero-model-request native Codex checks. Actual Claude CLI interactive resume, other Linux desktop terminals, native Wayland and real systemd scheduling remain unverified. macOS is not supported yet. Temporary user environments were exercised; this is not evidence of fresh OS installation testing.

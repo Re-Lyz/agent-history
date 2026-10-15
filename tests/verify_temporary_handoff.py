@@ -72,7 +72,7 @@ def verify():
             original = dict(ah.resolve(db, row['id']))
             ci.register_native(homes['a'], row['id'], path, original, dict(history_mode='legacy'), dict(model='gpt-6.1-sol'))
             for target, marker in [('claude', 'claude-added'), ('b', 'connection-added')]:
-                prepared = backend.prepare_launch(db, original, target, str(root))
+                prepared = backend.prepare_launch(db, original, target, str(root), policy='legacy')
                 ah.collect(db)
                 copied = dict(ah.resolve(db, prepared['session']))
                 append(copied, marker, timestamp)
@@ -95,7 +95,7 @@ def verify():
             append(dict(tool='claude', path=str(claude_path), id=sid, cwd=str(root)), 'claude-origin', timestamp)
             claude_baseline = claude_path.read_bytes()
             ah.collect(db)
-            prepared = backend.prepare_launch(db, dict(ah.resolve(db, 'claude:' + sid)), 'b', str(root))
+            prepared = backend.prepare_launch(db, dict(ah.resolve(db, 'claude:' + sid)), 'b', str(root), policy='legacy')
             ah.collect(db)
             copied = dict(ah.resolve(db, prepared['session']))
             assert 'claude-origin' in native_text(homes['b'], copied['id'])

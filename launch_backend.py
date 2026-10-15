@@ -157,13 +157,13 @@ def builtin_plan(db, row, target, cwd):
             return dict(kind='claude', session=row['id'], preview=f'cd "{cwd}"\nclaude --resume {row["id"]}')
         if row['kind'] in ('guardian', 'subagent'):
             raise ValueError('审批/子代理会话只能在原连接恢复。')
-        return dict(kind='claude-import', session=row['id'], description='创建临时会话，结束后同步并回收',
+        return dict(kind='claude-import', session=row['id'], description='切换 Agent，结束后保留最新主会话并清理旧文件',
                     preview=f'cd "{cwd}"\n# 转换选中文件的文字与工具摘要；图片、隐藏推理不迁移\n'
                             f'# 来源：{row["source"]} · {row["id"]}\nclaude --resume <目标会话ID>')
     if row['tool'] == 'codex' and row['source'] == target:
         home = dict(ah.codex_homes()).get(target)
         native = ah.codex_import.source_row(home, row['id']) if home else {}
-        if native.get('rollout_path') and Path(native['rollout_path']).resolve() != Path(row['path']).resolve():
+        if native.get('rollout_path') and not ah.codex_import.same_path(native['rollout_path'], row['path']):
             raise ValueError('原生恢复记录指向另一个文件，无法保证恢复当前预览；请先核对该连接的记录。')
         files = db.execute('SELECT COUNT(DISTINCT path) FROM files WHERE source=? AND session_key=?',
                            (target, row['key'])).fetchone()[0]
@@ -179,7 +179,7 @@ def builtin_plan(db, row, target, cwd):
             imported = ah.codex_import.import_session(db, selected, None, target, homes[target],
                                                      dry_run=True, prefer_native=False, fresh=True)
             return dict(kind='claude-codex-import', target=target, conversion=imported.get('conversion'),
-                        description='创建临时 Codex 会话，结束后同步并回收',
+                        description='切换到 Codex，结束后保留最新主会话并清理旧文件',
                         preview=f'cd "{cwd}"\n# 只迁移文字与工具摘要；不重放工具，图片与附件不迁移\n'
                                 '# 来源：' + row['id'] + '\n' + command_label(target) +
                                 ' -Session <目标会话ID> -NoSync')
@@ -191,8 +191,8 @@ def builtin_plan(db, row, target, cwd):
         imported = ah.codex_import.import_session(db, row, homes[row['source']], target, homes[target],
                                                  dry_run=True, prefer_native=False, explicit_handoff=True, fresh=True)
         args = [target, '-From', row['source'], '-Session', row['id']]
-        return dict(kind='codex-import', args=args, description='创建临时会话，结束后同步并回收',
-                    preview=f'cd "{cwd}"\n# 创建临时会话；结束后同步到原平台并回收临时副本\n'
+        return dict(kind='codex-import', args=args, description='切换连接，结束后保留最新主会话并清理旧文件',
+                    preview=f'cd "{cwd}"\n# 创建接续会话；结束并验证后保留此会话，清理已接替的旧文件\n'
                             '# 目标会话 ID 在准备后确定；以下为等价启动命令\n'
                             f'{command_label(target)} ' + ' '.join(args[1:]) + ' -NoSync')
     return dict(kind='codex', args=args, description='在原连接恢复选中版本',
@@ -401,7 +401,7 @@ def prepared_command(plan, sid, row):
     return dict(cwd=plan['cwd'], inner=inner, env=environment, session=sid, kind=plan['kind'])
 
 
-def prepare_launch(db, row, target, cwd, expected_stamp=None):
+def prepare_launch(db, row, target, cwd, expected_stamp=None, *, policy='single'):
     """Caller holds the collector lock; prepare one selected version, then return its command."""
     import setup_backend
     if not setup_backend.source_enabled(row, setup_backend.load_sources()):
@@ -417,24 +417,30 @@ def prepare_launch(db, row, target, cwd, expected_stamp=None):
     store.ensure(db)
     sync_report = store.sync_all(db)
     source = store.enroll(db, physical_row(row))
-    if row.get('logical'):
+    if policy == 'single':
+        import single_conversation
+        single_conversation.available(db, source)
+    if row.get('logical') or policy == 'single':
         sync_report = store.sync_all(db, source['conversation'], force=True)
         failed_versions = {failure['version'] for failure in sync_report['failed']}
         member_ids = {item['id'] for item in db.execute(
             'SELECT id FROM conversation_versions WHERE conversation=?', (source['conversation'],))}
         if failed_versions & member_ids:
             raise ValueError('这条对话的部分平台版本读取失败，请检查历史来源并刷新后再继续。')
-        heads = store.tips(db, source['conversation'])
-        if len(heads) > 1:
-            raise ValueError('这条对话有多个续聊分支，请在版本选择中明确选择一个分支。')
-        if heads and heads[0]['id'] != source['id']:
-            raise ValueError('另一平台已有新增内容，请刷新并查看最新版本后继续。')
+        if row.get('logical') and policy != 'single':
+            heads = store.tips(db, source['conversation'])
+            if len(heads) > 1:
+                raise ValueError('这条对话有多个续聊分支，请在版本选择中明确选择一个分支。')
+            if heads and heads[0]['id'] != source['id']:
+                raise ValueError('另一平台已有新增内容，请刷新并查看最新版本后继续。')
+    if policy == 'single':
+        single_conversation.latest(db, source)
     cross = kind in ('codex-import', 'claude-codex-import', 'claude-import')
     native_target = plan.get('native_target') or target
     identity = None
     if cross:
         import handoff_lifecycle
-        identity, target_row = handoff_lifecycle.prepare(db, source, native_target, plan['cwd'])
+        identity, target_row = handoff_lifecycle.prepare(db, source, native_target, plan['cwd'], policy=policy)
         sid = target_row['id']
     else:
         sid = plan.get('session') or row['id']
@@ -450,6 +456,17 @@ def prepare_launch(db, row, target, cwd, expected_stamp=None):
         launch_jobs.update(identity, session=prepared['session'], kind=prepared['kind'], target=target, handoff_state='prepared')
     else:
         identity = launch_jobs.create(row, prepared, target)
+    if policy == 'single':
+        # Reserve the actual target version so the independent runner can reject
+        # stale/double launches even after the UI has closed.
+        selected = store.lookup(db, target_row) if cross else source
+        try:
+            single_conversation.reserve(db, selected, identity)
+        except (OSError, ValueError, TimeoutError) as error:
+            launch_jobs.update(identity, state='failed', error=str(error), sync_state='failed')
+            if cross:
+                handoff_lifecycle.update(db, identity, state='failed', error=str(error))
+            raise
     prepared['env'].update(AGENT_HISTORY_JOB_ID=identity, AGENT_HISTORY_HOME=str(ah.DATA),
                            AGENT_HISTORY_SHARED_ROOT=str(ah.ROOT))
     prepared['job'] = identity

@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Single-current-conversation handoffs: reserve one managed writer, promote the used native target without a return copy, and retire covered old transcripts / resume entries through recoverable cleanup journals. Existing jobs retain their legacy policy.
 - Explicit conversation consolidation with database backups, full branch text, native resume verification and reversible folding of included versions.
 - Lazy tool-detail widgets, incremental rendering for all conversations, reuse of unchanged previews and coalesced launch-plan refreshes.
 - Selectable, readonly right-column text with keyboard / context-menu copying; remove dark tool-toggle backgrounds and borders.

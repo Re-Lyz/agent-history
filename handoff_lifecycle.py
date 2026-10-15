@@ -1,7 +1,8 @@
 """Owned temporary sessions: preserve native history before retiring a launch copy.
 
 Every publication and cleanup is recoverable under the shared collector lock.
-Only rows created by this module are eligible for automatic retirement.
+Legacy jobs retire their owned temporary. Single-current jobs also retire
+explicitly related old versions after verifying that their history is covered.
 """
 import contextlib
 import json
@@ -92,15 +93,15 @@ def publish(db, source, target, cwd, intent, on_publish):
     return child
 
 
-def prepare(db, source, target, cwd):
+def prepare(db, source, target, cwd, *, policy='single'):
     identity = uuid.uuid4().hex
     owner = db.execute('SELECT * FROM temporary_handoffs WHERE temporary_version=?', (source['id'],)).fetchone()
-    origin = version(db, owner['origin_version']) if owner else source
+    origin = version(db, owner['origin_version']) if owner and policy == 'legacy' else source
     store.observe(db, origin)
     origin = version(db, origin['id'])
     with db:
-        db.execute('INSERT INTO temporary_handoffs(id,source_version,source_revision,origin_version,origin_revision,target,cwd,state) '
-                   'VALUES(?,?,?,?,?,?,?,?)', (identity, source['id'], source['head'], origin['id'], origin['head'], target, cwd, 'preparing'))
+        db.execute('INSERT INTO temporary_handoffs(id,source_version,source_revision,origin_version,origin_revision,target,cwd,state,policy) '
+                   'VALUES(?,?,?,?,?,?,?,?,?)', (identity, source['id'], source['head'], origin['id'], origin['head'], target, cwd, 'preparing', policy))
     jobs.create(json.loads(source['row_json']), dict(session='pending', cwd=cwd, kind='handoff'), target, identity=identity)
     jobs.update(identity, handoff_state='preparing')
     intent = store.begin_intent(db, source, target, cwd, request_id=identity)
@@ -131,7 +132,7 @@ def recover_version(db, item, field):
         if not native:
             # A process may have died between the immutable file and native SQL publication.
             ci.register_native(home, row['id'], Path(row['path']), row, ci.first_meta(row['path']), ci.config(home))
-        elif Path(native['rollout_path']).resolve() != Path(row['path']).resolve():
+        elif not ci.same_path(native['rollout_path'], row['path']):
             raise ValueError('已发布会话指向其他原生文件，保留临时副本。')
     parent = version(db, item['source_version'] if field == 'temporary' else item['temporary_version'])
     parent['head'] = item['source_revision'] if field == 'temporary' else item['final_revision']
@@ -173,7 +174,7 @@ def claude_running(row):
              "$_.CommandLine -and $_.CommandLine.Contains($s) -and $_.CommandLine -match 'claude' }; " \
              "if ($p) { 'busy' } else { 'free' }"
     result = subprocess.run(['powershell.exe', '-NoLogo', '-NoProfile', '-Command', script],
-                            capture_output=True, text=True, timeout=15,
+                            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15,
                             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
     if result.returncode:
         raise ValueError('无法检查 Claude 会话进程，临时副本保留。')
@@ -195,7 +196,7 @@ def verify_native(db, child, final):
         from native_codex import CodexRPC
         home = dict(ah.codex_homes())[row['source']]
         native = ci.source_row(home, row['id'])
-        if not native or Path(native['rollout_path']).resolve() != Path(row['path']).resolve():
+        if not native or not ci.same_path(native['rollout_path'], row['path']):
             raise ValueError('承接版本的原生恢复位置不一致。')
         with CodexRPC(home) as rpc:
             result = rpc.call('thread/resume', dict(threadId=row['id']))
@@ -279,6 +280,9 @@ def finish(db, identity, *, manual=False, allow_branch=False):
     item = get(db, identity)
     if not item:
         return None
+    if item.get('policy') == 'single':
+        import single_conversation
+        return single_conversation.finish(db, identity, manual=manual)
     report = jobs.read(identity)
     if item['state'] == 'cleaned':
         if item['cleanup_path']:
@@ -358,7 +362,8 @@ def finish(db, identity, *, manual=False, allow_branch=False):
 
 def retry_pending(db, *, manual=False, allow_branch=False, identity=None):
     result = dict(completed=0, pending=0)
-    query = "SELECT id FROM temporary_handoffs WHERE state<>'cleaned'" + (' AND id=?' if identity else '')
+    query = 'SELECT id FROM temporary_handoffs WHERE id=?' if identity else \
+        "SELECT id FROM temporary_handoffs WHERE state<>'cleaned'"
     for (key,) in db.execute(query, (identity,) if identity else ()).fetchall():
         try:
             report = jobs.read(key)
@@ -370,5 +375,19 @@ def retry_pending(db, *, manual=False, allow_branch=False, identity=None):
             update(db, key, error=str(error))
             with contextlib.suppress(OSError, ValueError):
                 jobs.update(key, handoff_state='pending', sync_state='failed', sync_error=str(error))
+            result['pending'] += 1
+    # Same-connection resumes also reserve a logical conversation. Recover their
+    # final snapshots / interrupted cleanup through the same UI retry entry.
+    import single_conversation
+    native = db.execute('SELECT r.job FROM conversation_runs r LEFT JOIN temporary_handoffs h ON h.id=r.job '
+                        'WHERE h.id IS NULL' + (' AND r.job=?' if identity else ''), (identity,) if identity else ()).fetchall()
+    for (key,) in native:
+        try:
+            if jobs.read(key)['state'] in ('prepared', 'running'):
+                continue
+            single_conversation.finish(db, key, manual=manual)
+            result['completed'] += 1
+        except (OSError, ValueError, sqlite3.Error, RuntimeError, TimeoutError) as error:
+            jobs.update(key, sync_state='failed', sync_error=str(error))
             result['pending'] += 1
     return result

@@ -306,11 +306,13 @@ class ViewerInteractionTests(unittest.TestCase):
                 tree.selection_set(iid)
                 root.update()
                 self.choose_target('codexc b')
-                self.assertTrue(any('临时 Codex 会话' in value for value in self.statuses()))
+                self.assertTrue(any('保留最新主会话' in value for value in self.statuses()))
                 self.button('打开终端并继续').invoke()
                 self.wait(lambda: '终端已打开；请在终端确认恢复结果' in self.statuses())
                 root.tk.call(root.protocol('WM_DELETE_WINDOW'))
-            start = self.exercise(interact, expect_launch=True)
+            import handoff_lifecycle
+            with patch.object(handoff_lifecycle, 'claude_running', return_value=False):
+                start = self.exercise(interact, expect_launch=True)
             _, args = start.call_args.args
             sid = args[args.index('-Session' if os.name == 'nt' else 'resume') + 1]
             self.assertNotEqual(sid, 'claude-ui')
@@ -612,7 +614,7 @@ class ViewerInteractionTests(unittest.TestCase):
             menu = root.nametowidget(self.target_widget().cget('menu'))
             option = next(i for i in range(menu.index('end') + 1) if menu.entrycget(i, 'label').startswith('codexc b ·'))
             self.assertEqual(menu.entrycget(option, 'state'), 'normal')
-            self.assertIn('临时会话', menu.entrycget(option, 'label'))
+            self.assertIn('保留最新主会话', menu.entrycget(option, 'label'))
             self.choose_target('codexc a')
             self.assertTrue(self.button('打开终端并继续').instate(['!disabled']))
             with path.open('a', encoding='utf-8') as stream:
@@ -637,7 +639,7 @@ class ViewerInteractionTests(unittest.TestCase):
             native_db(self.path / name)
         with contextlib.closing(ah.connect()) as db:
             original = dict(ah.resolve(db, 'one'))
-            prepared = backend.prepare_launch(db, original, 'b', str(self.path))
+            prepared = backend.prepare_launch(db, original, 'b', str(self.path), policy='legacy')
             ah.collect(db)
             temporary = dict(ah.resolve(db, prepared['session']))
             for row, marker in [(original, '原平台并行'), (temporary, '临时平台新增')]:
@@ -704,8 +706,8 @@ class ViewerInteractionTests(unittest.TestCase):
             versions.set(choice)
             versions.event_generate('<<ComboboxSelected>>')
             root.update()
-            self.choose_target('codexc a')
-            self.assertTrue(self.button('打开终端并继续').instate(['!disabled']))
+            self.assertTrue(self.button('打开终端并继续').instate(['disabled']))
+            self.assertTrue(any('先合并分支' in value for value in self.statuses()))
             reader = next(w for w in self.widgets() if isinstance(w, self.tk.Text) and 'body' in w.tag_names())
             self.assertIn('目标分支新增问题', reader.get('1.0', 'end'))
             self.assertNotIn('原分支新增问题', reader.get('1.0', 'end'))
