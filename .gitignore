@@ -33,6 +33,7 @@
 !launch_jobs.py
 !launch_job_runner.py
 !conversation_store.py
+!conversation_merge.py
 !handoff_lifecycle.py
 !maintenance.py
 !conversation_titles.py

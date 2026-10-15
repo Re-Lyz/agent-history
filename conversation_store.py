@@ -30,6 +30,10 @@ CREATE TABLE IF NOT EXISTS handoff_publications(
  identity TEXT PRIMARY KEY, source_revision TEXT NOT NULL, target TEXT NOT NULL,
  version TEXT NOT NULL, native_hash TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'ready');
 CREATE INDEX IF NOT EXISTS conversation_members ON conversation_versions(conversation);
+CREATE TABLE IF NOT EXISTS conversation_merges(
+ source_version TEXT NOT NULL, target_version TEXT NOT NULL,
+ source_events TEXT NOT NULL, target_events TEXT NOT NULL,
+ PRIMARY KEY(source_version,target_version));
 CREATE TABLE IF NOT EXISTS handoff_intents(
  identity TEXT PRIMARY KEY, source_version TEXT NOT NULL, source_revision TEXT NOT NULL,
  target TEXT NOT NULL, cwd TEXT NOT NULL, row_json TEXT, state TEXT NOT NULL);
@@ -43,6 +47,10 @@ CREATE TABLE IF NOT EXISTS temporary_handoffs(
 
 
 def ensure(db):
+    db.execute('''CREATE TABLE IF NOT EXISTS conversation_merges(
+        source_version TEXT NOT NULL, target_version TEXT NOT NULL,
+        source_events TEXT NOT NULL, target_events TEXT NOT NULL,
+        PRIMARY KEY(source_version,target_version))''')
     columns = {column[1] for column in db.execute('PRAGMA table_info(conversation_versions)')}
     if not columns:
         db.executescript(SCHEMA)
@@ -278,6 +286,8 @@ def sync_all(db, conversation=None, force=False):
     scope = load_sources()
     query = 'SELECT * FROM conversation_versions' + (' WHERE conversation=?' if conversation else '')
     for item in db.execute(query, (conversation,) if conversation else ()).fetchall():
+        if item['state'] == 'merge-pending':
+            continue  # Only the merge verifier may publish this staged version.
         if not source_enabled(json.loads(item['row_json']), scope):
             report['skipped'].append(json.loads(item['row_json'])['path'])
             continue
@@ -290,11 +300,30 @@ def sync_all(db, conversation=None, force=False):
     return report
 
 
-def members(db, conversation):
+def members(db, conversation, include_merged=False):
     scope = load_sources()
-    return [dict(row) for row in db.execute('SELECT * FROM conversation_versions WHERE conversation=? AND present=1 AND head IS NOT NULL',
+    items = [dict(row) for row in db.execute("SELECT * FROM conversation_versions WHERE conversation=? AND present=1 AND head IS NOT NULL AND state<>'merge-pending'",
                                            (conversation,)) if source_enabled(json.loads(row['row_json']), scope) and
             Path(json.loads(row['row_json'])['path']).exists()]
+    if include_merged:
+        return items
+    # Old versions stay on disk. Only hide the exact content included in a
+    # surviving merge; new traffic or a rewritten/deleted merge restores them.
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE name='conversation_merges'").fetchone():
+        return items
+    merges = db.execute('SELECT m.* FROM conversation_merges m JOIN conversation_versions v '
+                        'ON v.id=m.source_version WHERE v.conversation=?', (conversation,)).fetchall()
+    if not merges:
+        return items
+    signatures = {item['id']: json.loads(item['event_ids']) if item.get('event_ids') else
+                  [event['id'] for event in revision(db, item['head'])['events']] for item in items}
+    covered = set()
+    for merge in merges:
+        source, target = merge['source_version'], merge['target_version']
+        if source in signatures and target in signatures and signatures[source] == json.loads(merge['source_events']) and \
+                prefix(json.loads(merge['target_events']), signatures[target]):
+            covered.add(source)
+    return [item for item in items if item['id'] not in covered]
 
 
 def tips(db, conversation):
@@ -481,7 +510,7 @@ def group_rows(db, rows):
         if cid in seen:
             continue
         seen.add(cid)
-        choices = [member for member in members(db, cid) if member['identity'] in available]
+        choices = [member for member in members(db, cid, include_merged=True) if member['identity'] in available]
         heads = tips(db, cid)
         candidates = [head for head in heads if head['identity'] in available]
         active = db.execute('SELECT active_version FROM conversations WHERE id=?', (cid,)).fetchone()[0]

@@ -58,6 +58,8 @@ Linux 可运行 `python tests/linux_check.py`；它要求真实 Tk 桌面并运�
 
 `test_conversation_store.py` 覆盖 Codex ↔ Claude 往返、多 Codex 连接、重复问题和采集、并行分支、压缩／重写／回退、旧快照不可变、读取失败后恢复、发布意图恢复，以及删除／恢复不自动复活目标。UI 场景验证默认归组、显式分支选择及另一平台更新后保留逻辑选中项。
 
+`test_conversation_merge.py` 验证公共前缀归并、独立分支／重复问题、工具全文及末尾换行、旧文件不变、来源变化阻止发布、验证失败后的重试，以及旧文件新增或合并文件删除时恢复旧分支。`python tests/verify_conversation_merge.py` 在临时目录用真实 Codex 检查合并后的列出／resume／重启读回；包含旧压缩记录和长工具输出，零模型回合。
+
 跨平台返回与首次配置的原生验证：
 
 ```shell
