@@ -16,6 +16,14 @@ from tests.test_trash import Fixture
 
 
 class LaunchJobTests(Fixture):
+    def test_ui_status_read_does_not_wait_for_report_writer(self):
+        prepared = backend.prepare_launch(self.db, dict(ah.resolve(self.db, 's1')), 'a', self.cwd)
+        with ah.file_lock(jobs.path(prepared['job']).with_suffix('.lock'), wait=False) as locked:
+            self.assertTrue(locked)
+            with self.assertRaises(TimeoutError):
+                jobs.read(prepared['job'], wait=False)
+        self.assertEqual(jobs.read(prepared['job'])['state'], 'prepared')
+
     def test_independent_new_session_runner_executes_synthetic_program_and_collects_after_exit(self):
         from tests.test_trash import rollout
         import launch_profiles

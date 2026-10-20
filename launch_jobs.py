@@ -30,9 +30,9 @@ def create(row, prepared, target, identity=None):
     return identity
 
 
-def read(identity):
+def read(identity, *, wait=True):
     # A Windows reader must release its handle before atomic replacement.
-    with ah.file_lock(path(identity).with_suffix('.lock'), wait=True) as locked:
+    with ah.file_lock(path(identity).with_suffix('.lock'), wait=wait) as locked:
         if not locked:
             raise TimeoutError('Launch report is busy.')
         return _read(identity)
@@ -113,8 +113,8 @@ def process_alive(pid):
         return True
 
 
-def reconcile():
-    for item in reports(limit=None):
+def reconcile(identity=None):
+    for item in [read(identity)] if identity else reports(limit=None):
         if item['state'] == 'running' and not process_alive(item.get('pid')):
             update(item['id'], expected_state='running', state='interrupted', sync_state='pending',
                    error='终端报告进程已退出；可刷新历史采集已保存的续聊内容。')

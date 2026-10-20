@@ -300,11 +300,13 @@ class NewViewerTests(viewer_tests.ViewerInteractionTests):
             entry.insert(0,'slow-fixture'); entry.event_generate('<Return>')
             self.wait(entered.is_set)
             entry.delete(0,'end'); entry.insert(0,'one 0'); entry.event_generate('<Return>')
+            # List workers are coalesced: release the older request so the
+            # latest query can run, while its obsolete result is discarded.
+            release.set(); self.wait(finished.is_set)
             self.wait(lambda: len(tree.get_children())==1 and 'one.jsonl' in tree.get_children()[0])
             tree.selection_set(tree.get_children()[0]); root.update()
             self.wait(lambda: any(isinstance(w,self.tk.Text) and 'one 0' in w.get('1.0','end') for w in self.widgets()))
             self.wait(lambda: any('450 / 450' in value for value in self.statuses()))
-            release.set(); self.wait(finished.is_set)
             deadline=time.monotonic()+.2
             while time.monotonic()<deadline: root.update(); time.sleep(.01)
             self.assertEqual(len(tree.get_children()),1)

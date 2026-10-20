@@ -46,6 +46,27 @@ class ConnectionTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), before)
         self.assertEqual(list(self.root.glob('connections-*.tmp')), [])
 
+    def test_snapshot_shares_nested_reads_but_refreshes_on_next_operation(self):
+        connections.register(self.root, 'api', self.home)
+        with patch.object(connections, 'load', wraps=connections.load) as load:
+            with connections.snapshot():
+                first = connections.homes(self.root)
+                first.clear()  # callers cannot mutate the cached registry
+                with connections.snapshot():
+                    self.assertIn('api', connections.homes(self.root))
+                self.assertEqual(load.call_count, 1)
+            (self.root / 'connections.json').write_text('{"connections": {}}')
+            with connections.snapshot():
+                self.assertEqual(connections.homes(self.root), {})
+            self.assertEqual(load.call_count, 2)
+
+    def test_snapshot_is_reset_after_failed_operation(self):
+        with self.assertRaises(RuntimeError), connections.snapshot():
+            self.assertEqual(connections.homes(self.root), {})
+            raise RuntimeError('failed refresh')
+        connections.register(self.root, 'api', self.home)
+        self.assertIn('api', connections.homes(self.root))
+
     @unittest.skipUnless(os.name == 'nt', 'Windows launcher')
     def test_launch_respects_auto_sync_switch_and_keeps_explicit_sync(self):
         log = self.root / 'calls.txt'

@@ -28,13 +28,15 @@ python install.py
 
 Open **Agent History** from the Start / application menu. The first-use wizard selects existing Codex / Claude homes or custom directories. No personal aliases such as `codex1` are required. Before resuming, install and authenticate your chosen Agent CLI, then check its program, working directory and command preview in the right column. The interface currently uses Chinese labels; this file is an English entry point, not an English UI.
 
+If a conversation reports that its launch process has ended and verification is pending, select it and click **重试同步／刷新续聊**. Recovery checks the process and native writer locks again before verifying saved content and releasing the reservation. Running jobs remain pending; branches, missing files and validation failures are explained in **启动记录与诊断**.
+
 To start a new conversation, click **新增对话**, select a builtin command or custom launch profile and a working directory, then click **打开终端并新建** after reviewing the command. No existing history is required. Profiles keep their directory policy and model settings; authentication happens in the terminal. Saved history from connected sources is collected after the command exits, or through Refresh History while it runs. Closing the viewer leaves the terminal running.
 
 Basic installation registers only the viewer. MCP, hooks, background jobs and desktop shortcuts are optional. Installation defaults to `~/.local/share/agent-history`; `--prefix`, `--python` and `--shared-root` override locations. Launchers refer to the source directory, so keep it after installation. The ZIP is source, not a standalone executable. For direct source execution, `python history_ui.py` reads source configuration from the checkout's parent by default; use `AGENT_HISTORY_SHARED_ROOT` to override. See the [first-use guide](docs/first-use.md) (Chinese).
 
 ## Features and limits
 
-- Search, project filtering, sortable columns, Markdown and highlighted code, message navigation and collapsible / scrolling tool details.
+- Search, project filtering and sortable columns. Lists load in the background, rapid filter changes keep the latest request, and sorting or loading more rows reuses loaded results. Markdown and highlighted code, message navigation and collapsible / scrolling tool details.
 - Logical conversation names and configurable launch profiles, programs, argument arrays, favorites and default launch entries.
 - One managed Agent per logical conversation: native resume in the same connection; cross-Agent handoffs promote the latest target and retire verified, fully covered older transcripts. Interrupted tasks preserve files for recovery. Revision backups remain separate; existing parallel branches must be merged first.
 - Recoverable deletion with active-session / writer-lock protection; optional stdlib MCP history readers.

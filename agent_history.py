@@ -301,6 +301,7 @@ def prefix_hash(path, size):
     return value.hexdigest()
 
 
+@connections.snapshot()
 def collect(db, verbose=False, only_paths=None):
     only_paths = {str(Path(path).resolve()) for path in only_paths} if only_paths is not None else None
     seen, changed = set(), 0

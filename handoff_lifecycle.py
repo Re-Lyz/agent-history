@@ -366,8 +366,11 @@ def retry_pending(db, *, manual=False, allow_branch=False, identity=None):
         "SELECT id FROM temporary_handoffs WHERE state<>'cleaned'"
     for (key,) in db.execute(query, (identity,) if identity else ()).fetchall():
         try:
+            if manual:
+                jobs.reconcile(identity=key)
             report = jobs.read(key)
             if report['state'] in ('prepared', 'running'):
+                result['pending'] += 1
                 continue
             finish(db, key, manual=manual, allow_branch=allow_branch)
             result['completed'] += 1
@@ -383,7 +386,10 @@ def retry_pending(db, *, manual=False, allow_branch=False, identity=None):
                         'WHERE h.id IS NULL' + (' AND r.job=?' if identity else ''), (identity,) if identity else ()).fetchall()
     for (key,) in native:
         try:
+            if manual:
+                jobs.reconcile(identity=key)
             if jobs.read(key)['state'] in ('prepared', 'running'):
+                result['pending'] += 1
                 continue
             single_conversation.finish(db, key, manual=manual)
             result['completed'] += 1

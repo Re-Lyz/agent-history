@@ -48,6 +48,7 @@ def review_candidates():
     return support.review_snapshot()['candidates']
 
 
+@connections.snapshot()
 def list_rows(db, source='', query='', include_imports=False, include_internal=False, only=None, limit=500,
               project=None, sort_by='time', descending=True):
     """Filter all transcript versions and sort before applying a page limit."""
@@ -61,6 +62,10 @@ def list_rows(db, source='', query='', include_imports=False, include_internal=F
         r = dict(raw)
         r['indexed_path'] = r['path']
         r['source'], r['path'] = r.pop('file_source'), r.pop('file_path')
+        if source and r['source'] != source:
+            continue
+        if only is not None and str(Path(r['path'])) not in only:
+            continue
         if scope is not None and (r['source'] not in scope['codex'] if r['tool'] == 'codex' else
                                  str(Path(r['path']).parent.parent.parent) not in scope['claude']):
             continue
@@ -71,12 +76,7 @@ def list_rows(db, source='', query='', include_imports=False, include_internal=F
         with contextlib.suppress(ValueError, OSError):
             r, matched = ah.physical_view(db, r, query)
         r = titles.apply(db, r)
-        if only is not None:
-            if str(Path(r['path'])) not in only:
-                continue
-        elif r['kind'] not in kinds and not (r['kind'] == 'import' and conversations.lookup(db, r)):
-            continue
-        if source and r['source'] != source:
+        if only is None and r['kind'] not in kinds and not (r['kind'] == 'import' and conversations.lookup(db, r)):
             continue
         if project is not None and support.project_key(r['cwd']) != support.project_key(project):
             continue
@@ -97,6 +97,23 @@ def project_choices(db):
     for row in list_rows(db, include_imports=True, include_internal=True, limit=None):
         projects.setdefault(support.project_key(row['cwd']), row['cwd'] or '')
     return {'全部项目': None, **{cwd or '未记录目录': cwd for cwd in sorted(projects.values(), key=str.casefold)}}
+
+
+def recovery_job(db, selected, fallback=None):
+    """A selected conversation must never retry another conversation's job."""
+    if not selected:
+        return fallback
+    member = conversations.lookup(db, selected)
+    if not member:
+        return None
+    reservation = db.execute('SELECT job FROM conversation_runs WHERE conversation=?',
+                             (member['conversation'],)).fetchone()
+    if reservation:
+        return reservation['job']
+    owner = db.execute("SELECT id FROM temporary_handoffs WHERE temporary_version=? OR durable_version=? "
+                       "ORDER BY (state='cleaned'), rowid DESC LIMIT 1",
+                       (member['id'], member['id'])).fetchone()
+    return owner['id'] if owner else None
 
 
 def render_messages(rows, limit=MESSAGE_LIMIT):
@@ -270,6 +287,7 @@ def run_ui():
             self.tool_states = {}
             self.reader_stamp = None
             self.jobs = {}
+            self.pending_jobs = {}
             self.job_serial = 0
             self.checked = set()
             self.candidates = {}
@@ -695,8 +713,10 @@ def run_ui():
             return outer
 
         # -------- background work
-        def background(self, work, done=None, *, label='处理中…', key=None, refresh_preview=True):
+        def background(self, work, done=None, *, label='处理中…', key=None, refresh_preview=True, replace=False):
             if key and any(job[0] == key for job in self.jobs.values()):
+                if replace:
+                    self.pending_jobs[key] = (work, done, label, refresh_preview)
                 return  # repeated clicks do not start the same operation again
             self.job_serial += 1
             serial = self.job_serial
@@ -723,7 +743,8 @@ def run_ui():
                 while True:
                     serial, done, result, error = self.results.get_nowait()
                     completed_job = self.jobs.pop(serial, (None, ''))
-                    self.busy.set('')
+                    if completed_job[0] != 'history-list' or error:
+                        self.busy.set('')
                     try:
                         if error:
                             self.show_error('操作失败', error)
@@ -741,7 +762,11 @@ def run_ui():
                         self.launch_status.set(result['message'])
                     if self.launch_job and completed_job[0] in ('launch', 'handoff-sync'):
                         with contextlib.suppress(ValueError, OSError):
-                            self.launch_status.set(launch_jobs.describe(launch_jobs.read(self.launch_job)))
+                            self.launch_status.set(launch_jobs.describe(launch_jobs.read(self.launch_job, wait=False)))
+                    pending = self.pending_jobs.pop(completed_job[0], None)
+                    if pending:
+                        work, callback, label, preview = pending
+                        self.background(work, callback, label=label, key=completed_job[0], refresh_preview=preview)
                     if self.jobs:
                         self.busy.set(self.jobs[max(self.jobs)][1])
             self.root.after(100, self.poll)
@@ -776,11 +801,8 @@ def run_ui():
             self.source_box['values'] = ['全部来源'] + list(registry['connections']) + [CLAUDE]
             if self.source.get() not in self.source_box['values']:
                 self.source.set('全部来源')
+            self.initial_list_pending = True
             self.after_reindex(snapshot)
-            if (not self.tree.get_children() or not (ah.ROOT / 'connections.json').exists()) and not getattr(self, 'setup_prompted', False):
-                self.setup_prompted = True
-                self.busy.set('暂无历史，请通过配置向导选择本机历史目录。')
-                self.setup_sources()
 
         def manage_profiles(self):
             settings_ui.ProfileManager(self.root, self.settings_changed)
@@ -925,12 +947,14 @@ def run_ui():
         def poll_launch_report(self):
             if self.launch_job:
                 try:
-                    report = launch_jobs.read(self.launch_job)
+                    report = launch_jobs.read(self.launch_job, wait=False)
                     if report != self.last_launch_report:
                         self.last_launch_report = report
                         self.launch_status.set(launch_jobs.describe(report))
                         if report.get('sync_state') == 'collected' and report['state'] in ('exited', 'failed'):
                             self.background(self.reindex, self.after_reindex, label='正在读取续聊内容…', key='handoff-sync')
+                except TimeoutError:
+                    pass  # The runner is publishing a report; try next tick.
                 except (ValueError, OSError) as error:
                     support.log_error('Reading terminal status', error)
             self.root.after(1000, self.poll_launch_report)
@@ -959,21 +983,11 @@ def run_ui():
             def work():
                 import handoff_lifecycle
                 with trash.locked_db() as db:
-                    identity = None if allow_branch else latest_job
-                    if selected:
-                        member = conversations.lookup(db, selected)
-                        owner = db.execute("SELECT id FROM temporary_handoffs WHERE temporary_version=? OR durable_version=? "
-                                           "ORDER BY (state='cleaned'), rowid DESC LIMIT 1",
-                                           (member['id'], member['id'])).fetchone() if member else None
-                        reservation = db.execute('SELECT job FROM conversation_runs WHERE conversation=?',
-                                                 (member['conversation'],)).fetchone() if member else None
-                        if reservation:
-                            identity = reservation['job']
-                        elif owner:
-                            identity = owner['id']
+                    identity = recovery_job(db, selected, None if allow_branch else latest_job)
                     if allow_branch and not identity:
                         raise ValueError('请先选择要保存的临时续聊分支。')
-                    outcome = handoff_lifecycle.retry_pending(db, manual=True, allow_branch=allow_branch, identity=identity)
+                    outcome = handoff_lifecycle.retry_pending(db, manual=True, allow_branch=allow_branch, identity=identity) \
+                        if identity else dict(completed=0, pending=0)
                 return outcome, self.reindex(), identity
             def done(result):
                 outcome, snapshot, identity = result
@@ -999,77 +1013,80 @@ def run_ui():
         def refresh(self):
             self.list_request = getattr(self, 'list_request', 0) + 1
             request = self.list_request
-            if self.search_text():
-                source = '' if self.source.get() == '全部来源' else self.source.get()
-                query = self.search_text()
-                imports, internal = self.show_imports.get(), self.show_internal.get()
-                only = set(self.candidates) if self.only_review.get() else None
-                project = self.project_map.get(self.project.get())
-                column, descending = self.sort_column, self.sort_descending
-                selected = next(iter(self.tree.selection()), None)
-                position = self.tree.yview()[0]
-                self.list_limit = LIST_PAGE
-                search_filters = (source, query, imports, internal, project, tuple(sorted(only or [])))
-                if search_filters == getattr(self, 'search_filters', None):
-                    self.list_limit = getattr(self, 'search_list_limit', LIST_PAGE)
-                self.search_filters = search_filters
-                self.search_list_limit = self.list_limit
-                def search():
-                    with contextlib.closing(ah.connect()) as db:
-                        rows = list_rows(db, source, query, imports, internal, only, limit=None,
-                                         project=project, sort_by=column, descending=descending)
-                        # Keep the matching physical version: grouping must not
-                        # replace a search hit with a different branch's history.
-                        return rows
-                def done(rows):
-                    if request == self.list_request:
-                        self.display_rows(support.sort_history(rows, self.sort_column, self.sort_descending), selected, position)
-                self.background(search, done, label='正在搜索历史…')
-                return
-            self.version_override = None
-            self.version_iid = None
-            selected = self.tree.selection()
-            selected = selected[0] if selected else None
+            source = '' if self.source.get() == '全部来源' else self.source.get()
+            query = self.search_text()
+            imports, internal = self.show_imports.get(), self.show_internal.get()
+            only = set(self.candidates) if self.only_review.get() else None
+            project_label = self.project.get()
+            project_map, projects_dirty = dict(self.project_map), self.projects_dirty
+            column, descending = self.sort_column, self.sort_descending
+            selected = next(iter(self.tree.selection()), None)
             selected_row = self.rows.get(selected)
             list_position = self.tree.yview()[0]
-            source = '' if self.source.get() == '全部来源' else self.source.get()
-            only = set(self.candidates) if self.only_review.get() else None
-            with contextlib.closing(ah.connect()) as db:
-                selected_member = conversations.lookup(db, selected_row) if selected_row else None
-                if self.projects_dirty:
-                    self.project_map = project_choices(db)
-                    self.project_box['values'] = list(self.project_map)
-                    if self.project.get() not in self.project_map:
-                        match = next((label for label, path in self.project_map.items() if path is not None and
-                                      support.project_key(path) == support.project_key(self.project.get())), '全部项目')
-                        self.project.set(match)
-                    self.projects_dirty = False
-                filters = (source, self.search_text(), self.show_imports.get(), self.show_internal.get(),
-                           self.only_review.get(), self.project.get())
-                if filters != getattr(self, 'previous_filters', None):
-                    self.list_limit = LIST_PAGE
-                self.previous_filters = filters
-                rows = list_rows(db, source, self.search_text(), self.show_imports.get(),
-                                 self.show_internal.get(), only, limit=None,
-                                 project=self.project_map.get(self.project.get()),
-                                 sort_by=self.sort_column, descending=self.sort_descending)
-                if not self.show_imports.get() and only is None:
-                    rows = conversations.group_rows(db, rows)
-                    if selected_member:
-                        replacement = next((row for row in rows if row.get('conversation') == selected_member['conversation']), None)
+            filters = (source, query, imports, internal, project_label,
+                       None if only is None else tuple(sorted(only)))
+            if filters != getattr(self, 'previous_filters', None):
+                self.list_limit = LIST_PAGE
+            self.previous_filters = filters
+            if not query:
+                self.version_override = None
+                self.version_iid = None
+
+            def load():
+                # All filesystem/database work runs off Tk. A scoped snapshot
+                # shares resolved homes across both project and conversation lists.
+                with connections.snapshot(), contextlib.closing(ah.connect()) as db:
+                    choices = project_choices(db) if projects_dirty else project_map
+                    label = project_label
+                    if label not in choices:
+                        label = next((name for name, path in choices.items() if path is not None and
+                                      support.project_key(path) == support.project_key(label)), '全部项目')
+                    rows = list_rows(db, source, query, imports, internal, only, limit=None,
+                                     project=choices.get(label), sort_by=column, descending=descending)
+                    selection = selected
+                    member = conversations.lookup(db, selected_row) if selected_row and not query else None
+                    # Search keeps the matching physical version, even if another
+                    # branch is the conversation's current display version.
+                    if not query and not imports and only is None:
+                        rows = conversations.group_rows(db, rows)
+                        replacement = next((row for row in rows if member and
+                                            row.get('conversation') == member['conversation']), None)
                         if replacement:
-                            selected = f"{replacement['source']}|{replacement['path']}"
-                elif selected_member:
-                    owner = db.execute("SELECT durable_version FROM temporary_handoffs WHERE temporary_version=? AND state='cleaned'",
-                                       (selected_member['id'],)).fetchone()
-                    if owner:
-                        durable = db.execute('SELECT row_json FROM conversation_versions WHERE id=?', (owner['durable_version'],)).fetchone()
-                        native = json.loads(durable['row_json']) if durable else None
-                        replacement = next((row for row in rows if native and row['path'] == native['path']), None)
-                        if replacement:
-                            selected = f"{replacement['source']}|{replacement['path']}"
-            rows = support.sort_history(rows, self.sort_column, self.sort_descending)
-            self.display_rows(rows, selected, list_position)
+                            selection = f"{replacement['source']}|{replacement['path']}"
+                    elif member:
+                        owner = db.execute("SELECT durable_version FROM temporary_handoffs "
+                                           "WHERE temporary_version=? AND state='cleaned'", (member['id'],)).fetchone()
+                        if owner:
+                            durable = db.execute('SELECT row_json FROM conversation_versions WHERE id=?',
+                                                 (owner['durable_version'],)).fetchone()
+                            native = json.loads(durable['row_json']) if durable else None
+                            replacement = next((row for row in rows if native and row['path'] == native['path']), None)
+                            if replacement:
+                                selection = f"{replacement['source']}|{replacement['path']}"
+                    return rows, selection, choices, label
+
+            def done(result):
+                if request != self.list_request:
+                    return
+                rows, selection, choices, label = result
+                self.project_map = choices
+                self.project_box['values'] = list(choices)
+                self.project.set(label)
+                self.projects_dirty = False
+                current_selection = next(iter(self.tree.selection()), None)
+                if current_selection != selected:
+                    selection = current_selection
+                self.display_rows(support.sort_history(rows, self.sort_column, self.sort_descending),
+                                  selection, list_position)
+                if getattr(self, 'initial_list_pending', False):
+                    self.initial_list_pending = False
+                    if not rows or not (ah.ROOT / 'connections.json').exists():
+                        self.setup_prompted = True
+                        self.busy.set('暂无历史，请通过配置向导选择本机历史目录。')
+                        self.setup_sources()
+
+            self.background(load, done, label='正在搜索历史…' if query else '正在读取历史…',
+                            key='history-list', replace=True, refresh_preview=False)
 
         def display_rows(self, rows, selected, list_position):
             self.all_rows = rows
@@ -1109,7 +1126,8 @@ def run_ui():
             self.checked &= set(self.rows)      # keep ticks that are still visible
             for iid in self.rows:
                 self.paint(iid)
-            self.busy.set(f'{len(rows)} 条')
+            if not self.busy.get() or self.busy.get() in ('正在读取历史…', '正在搜索历史…'):
+                self.busy.set(f'{len(rows)} 条')
             self.update_checks()
             if selected in self.rows:
                 if self.tree.selection() != (selected,):
@@ -1201,8 +1219,10 @@ def run_ui():
 
         def load_more_rows(self):
             self.list_limit += LIST_PAGE
-            self.search_list_limit = self.list_limit
-            self.refresh()
+            if hasattr(self, 'all_rows') and not any(job[0] == 'history-list' for job in self.jobs.values()):
+                self.display_rows(self.all_rows, next(iter(self.tree.selection()), None), self.tree.yview()[0])
+            else:
+                self.refresh()
 
         def focus_find(self, event=None):
             self.find_entry.focus_set()
@@ -1615,6 +1635,7 @@ def run_ui():
                 if member:
                     import single_conversation
                     try:
+                        launch_reason = single_conversation.reservation_reason(db, member, wait=False)
                         single_conversation.latest(db, dict(member))
                     except ValueError as error:
                         launch_reason = str(error)

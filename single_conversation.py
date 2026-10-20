@@ -24,23 +24,40 @@ def release(db, identity):
         db.execute('DELETE FROM conversation_runs WHERE job=?', (identity,))
 
 
-def available(db, source, identity=None):
-    """Include hidden physical versions and prepared launches, not just UI tips."""
+def reservation_reason(db, source, identity=None, *, wait=True):
+    """Read-only explanation shared by launch validation and the UI preview."""
     import handoff_lifecycle as lifecycle
-    store.ensure(db)
     lease = db.execute('SELECT * FROM conversation_runs WHERE conversation=?', (source['conversation'],)).fetchone()
     if lease and lease['job'] != identity:
         try:
-            report = jobs.read(lease['job'])
+            report = jobs.read(lease['job'], wait=wait)
+        except TimeoutError:
+            return '启动状态正在更新，请稍后刷新。'
         except (OSError, ValueError):
-            raise ValueError('这条对话有未完成的启动记录，请先检查启动记录并恢复同步。')
+            return '这条对话有未完成的启动记录，请先检查启动记录并恢复同步。'
         owned = lifecycle.get(db, lease['job'])
         if owned and owned['state'] == 'cleaned' or not owned and (
                 report['state'] == 'cancelled' or report['state'] in ('exited', 'failed', 'interrupted')
                 and report.get('sync_state') in ('collected', 'not-needed')):
-            release(db, lease['job'])
-        else:
-            raise ValueError('这条对话已准备启动、正在使用或等待同步；请先结束当前 Agent 并完成同步。')
+            return ''
+        if report['state'] == 'prepared' and jobs.process_alive(report.get('preparation_pid')):
+            return '这条对话已准备启动，等待终端接管；请检查已打开的终端。'
+        if jobs.process_alive(report.get('pid')):
+            return '这条对话正在使用，请先正常退出对应的 Agent，再重试同步。'
+        return '这条对话的启动进程已结束，等待核验已保存内容；请点击“重试同步／刷新续聊”。'
+    return ''
+
+
+def available(db, source, identity=None):
+    """Include hidden physical versions and prepared launches, not just UI tips."""
+    import handoff_lifecycle as lifecycle
+    store.ensure(db)
+    reason = reservation_reason(db, source, identity)
+    if reason:
+        raise ValueError(reason)
+    lease = db.execute('SELECT * FROM conversation_runs WHERE conversation=?', (source['conversation'],)).fetchone()
+    if lease and lease['job'] != identity:
+        release(db, lease['job'])
     for item in versions(db, source['conversation']):
         row = json.loads(item['row_json'])
         if not Path(row['path']).is_file():

@@ -370,6 +370,68 @@ class ViewerInteractionTests(unittest.TestCase):
             finally:
                 release.set()
 
+    def test_list_refresh_stays_responsive_and_coalesces_filter_changes(self):
+        actual = ui.list_rows
+        started, release = threading.Event(), threading.Event()
+        main_thread = threading.get_ident()
+        calls = []
+
+        def slow(db, *args, **kwargs):
+            self.assertNotEqual(threading.get_ident(), main_thread)
+            calls.append(args[0] if args else '')
+            if len(calls) == 1:
+                started.set()
+                release.wait(5)
+            return actual(db, *args, **kwargs)
+
+        def interact(root):
+            tree = next(w for w in self.widgets() if isinstance(w, self.ttk.Treeview) and 'check' in w.cget('columns'))
+            self.wait(lambda: len(tree.get_children()) == 2)
+            source = next(w for w in self.widgets() if isinstance(w, self.ttk.Combobox)
+                          and '全部来源' in w.cget('values'))
+            with patch.object(ui, 'list_rows', side_effect=slow):
+                source.set('b')
+                source.event_generate('<<ComboboxSelected>>')
+                self.wait(started.is_set)
+                heartbeat = []
+                root.after(1, lambda: heartbeat.append(True))
+                self.wait(lambda: heartbeat)
+                for choice in ('a', 'b', 'a'):
+                    source.set(choice)
+                    source.event_generate('<<ComboboxSelected>>')
+                    root.update()
+                self.assertEqual(len(calls), 1)
+                release.set()
+                self.wait(lambda: len(calls) == 2 and not any('正在读取历史' in s for s in self.statuses()))
+                self.assertEqual(calls, ['b', 'a'])
+                self.assertEqual(len(tree.get_children()), 2)
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+
+        try:
+            self.exercise(interact)
+        finally:
+            release.set()
+
+    def test_stale_reservation_disables_launch_with_recovery_instruction(self):
+        import launch_jobs
+        with contextlib.closing(ah.connect()) as db:
+            row = dict(ah.resolve(db, 'one'))
+            prepared = ui.launcher.prepare_launch(db, row, 'a', str(self.path))
+            launch_jobs.update(prepared['job'], state='interrupted', sync_state='failed')
+
+        def interact(root):
+            tree = next(w for w in self.widgets() if isinstance(w, self.ttk.Treeview) and 'check' in w.cget('columns'))
+            self.wait(lambda: len(tree.get_children()) == 2)
+            one = next(i for i in tree.get_children() if 'one.jsonl' in i)
+            tree.selection_set(one)
+            self.wait(lambda: any('请点击“重试同步' in s for s in self.statuses()))
+            self.assertTrue(self.button('打开终端并继续').instate(['disabled']))
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+
+        # Startup's automatic same-home collection could otherwise settle it.
+        with patch('handoff_lifecycle.retry_pending', return_value=dict(completed=0, pending=1)):
+            self.exercise(interact)
+
     def test_close_still_destroys_window_when_preferences_cannot_be_saved(self):
         def interact(root):
             tree = next(w for w in self.widgets() if isinstance(w, self.ttk.Treeview) and 'check' in w.cget('columns'))
@@ -576,7 +638,7 @@ class ViewerInteractionTests(unittest.TestCase):
             root.update()
             self.button('全选').invoke()
             self.button('加载更多对话').invoke()
-            root.update()
+            self.wait(lambda: len(tree.get_children()) == 503)
             self.assertEqual(len(tree.get_children()), 503)
             self.assertEqual(tree.selection(), (iid,))
             self.assertEqual(sum(tree.set(item, 'check') == ui.CHECK_ON for item in tree.get_children()), 500)
@@ -591,7 +653,7 @@ class ViewerInteractionTests(unittest.TestCase):
             self.assertEqual(len(tree.get_children()), 1)
             search.delete(0, 'end')
             search.event_generate('<Return>')
-            root.update()
+            self.wait(lambda: len(tree.get_children()) == 500)
             self.assertEqual(len(tree.get_children()), 500)
             root.tk.call(root.protocol('WM_DELETE_WINDOW'))
         self.exercise(interact)
@@ -608,7 +670,7 @@ class ViewerInteractionTests(unittest.TestCase):
             self.wait(lambda: len(tree.get_children()) == 1)
             imports = next(w for w in self.widgets() if isinstance(w, self.ttk.Checkbutton) and w.cget('text') == '导入副本')
             imports.invoke()
-            root.update()
+            self.wait(lambda: any('two.jsonl' in item for item in tree.get_children()))
             tree.selection_set(next(item for item in tree.get_children() if 'two.jsonl' in item))
             root.update()
             menu = root.nametowidget(self.target_widget().cget('menu'))
@@ -654,7 +716,7 @@ class ViewerInteractionTests(unittest.TestCase):
             self.wait(lambda: len(tree.get_children()) == 2)
             imports = next(w for w in self.widgets() if isinstance(w, self.ttk.Checkbutton) and w.cget('text') == '导入副本')
             imports.invoke()
-            root.update()
+            self.wait(lambda: any(prepared['session'] in item for item in tree.get_children()))
             tree.selection_set(next(item for item in tree.get_children() if prepared['session'] in item))
             root.update()
             self.button('保留分支并完成同步').invoke()
@@ -992,18 +1054,18 @@ class ViewerInteractionTests(unittest.TestCase):
             self.assertIn(str(path), details.get('1.0', 'end'))
             self.assertIn('[已恢复] a · two', details.get('1.0', 'end'))
             self.assertEqual(len(recycle.get_children()), 0)
-            self.assertEqual(len(tree.get_children()), 2)
+            self.wait(lambda: len(tree.get_children()) == 2)
             notebook.select(0)
             root.update()
             project = next(w for w in self.widgets() if isinstance(w, self.ttk.Combobox) and '全部项目' in w.cget('values'))
             self.assertIn(project_path, project.cget('values'))
             project.set(project_path)
             project.event_generate('<<ComboboxSelected>>')
-            root.update()
+            self.wait(lambda: len(tree.get_children()) == 1)
             self.assertEqual(len(tree.get_children()), 1)
             self.assertIn('two.jsonl', tree.get_children()[0])
             self.button('全部项目').invoke()
-            root.update()
+            self.wait(lambda: len(tree.get_children()) == 2)
             self.assertEqual(len(tree.get_children()), 2)
             root.tk.call(root.protocol('WM_DELETE_WINDOW'))
         self.exercise(interact)

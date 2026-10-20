@@ -510,6 +510,7 @@ def publish_claude(db, source, projected, cwd, intent=None, on_publish=None):
     return target_row
 
 
+@ah.connections.snapshot()
 def group_rows(db, rows):
     """Group only explicitly related versions; preserve unrelated same-ID files."""
     ensure(db)

@@ -331,6 +331,43 @@ class SingleConversationTests(Fixture):
             self.assertEqual(runner.run(prepared['job'], ['fixture']), 1)
         execute.assert_not_called()
 
+    def test_manual_retry_reconciles_dead_runner_without_prior_global_refresh(self):
+        for target in ('a', 'b'):
+            with self.subTest(target=target):
+                prepared, current = self.prepare(target=target)
+                jobs.update(prepared['job'], state='running', pid=999999)
+                version = store.lookup(self.db, current)
+                with patch.object(jobs, 'process_alive', return_value=False):
+                    self.assertIn('重试同步', single.reservation_reason(self.db, version))
+                    result = lifecycle.retry_pending(self.db, manual=True, identity=prepared['job'])
+                self.assertEqual(result, dict(completed=1, pending=0))
+                self.assertEqual(jobs.read(prepared['job'])['state'], 'interrupted')
+                self.assertIsNone(self.db.execute('SELECT 1 FROM conversation_runs').fetchone())
+                self.assertTrue(Path(current['path']).exists())
+
+    def test_manual_retry_keeps_live_runner_and_counts_it_as_pending(self):
+        prepared, current = self.prepare()
+        jobs.update(prepared['job'], state='running', pid=os.getpid())
+        before = Path(current['path']).read_bytes()
+        result = lifecycle.retry_pending(self.db, manual=True, identity=prepared['job'])
+        self.assertEqual(result, dict(completed=0, pending=1))
+        self.assertEqual(jobs.read(prepared['job'])['state'], 'running')
+        self.assertIn('正在使用', single.reservation_reason(self.db, store.lookup(self.db, current)))
+        self.assertIsNotNone(self.db.execute('SELECT 1 FROM conversation_runs').fetchone())
+        self.assertEqual(Path(current['path']).read_bytes(), before)
+
+    def test_selected_conversation_retry_does_not_fall_back_to_unrelated_job(self):
+        from history_ui import recovery_job
+        prepared, current = self.prepare()
+        unrelated = self.a / 'sessions' / 'unrelated.jsonl'
+        unrelated.write_text(rollout('unrelated', '另一个问题', self.cwd), encoding='utf-8')
+        ah.collect(self.db)
+        row = dict(ah.resolve(self.db, 'unrelated'))
+        self.assertIsNone(recovery_job(self.db, row, prepared['job']))
+        store.enroll(self.db, row)
+        self.assertIsNone(recovery_job(self.db, row, prepared['job']))
+        self.assertEqual(recovery_job(self.db, current, None), prepared['job'])
+
     def test_crash_between_native_reservation_and_report_write_recovers_on_start_or_retry(self):
         from setup_backend import atomic_json
         for via_runner in (True, False):
