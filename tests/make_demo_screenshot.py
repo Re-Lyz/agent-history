@@ -28,7 +28,7 @@ def capture(output):
             demo=dict(home=str(home),direct=True,name='Codex · 演示',sync_history=False)))),encoding='utf-8')
         (home/'config.toml').write_text('model="demo-model"\n',encoding='utf-8')
         (data/'sources.json').write_text(json.dumps(dict(version=1,codex=['demo'],claude=[])),encoding='utf-8')
-        (data/'ui-preferences.json').write_text(json.dumps(dict(geometry='1440x860+40+40',
+        (data/'ui-preferences.json').write_text(json.dumps(dict(geometry='1440x940+40+40',
             preview_mode='markdown',panes=[0.26,0.73])),encoding='utf-8')
         (data/'launch-profiles.json').write_text(json.dumps(dict(version=1,profiles=[dict(
             id='demo_agent',name='Codex · 演示入口',type='codex',connection='demo',
@@ -40,6 +40,7 @@ def capture(output):
             '## 第一次使用\n\n1. 选择历史来源\n2. 搜索并查看对话\n3. 选择 Agent 与工作目录\n\n'
             '> 这里的内容全部是生成的演示数据。\n\n'
             '```python\nprint("Hello, Agent History!")\n```\n\n'
+            '[项目说明](C:/demo/project/README.md:12) 可以点击定位本地文件。\n\n'
             '工具调用可以展开查看参数与输出。')]
         records=[dict(type='session_meta',timestamp=stamp,payload=dict(
             id='00000000-0000-4000-8000-000000000001',cwd='C:/demo/project',source='cli',timestamp=stamp))]

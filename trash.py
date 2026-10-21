@@ -13,6 +13,7 @@ import argparse
 from collections import defaultdict
 import contextlib
 import datetime
+from functools import wraps
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ import shutil
 import sqlite3
 import sys
 import time
+import threading
 import uuid
 
 import agent_history as ah
@@ -28,6 +30,40 @@ from setup_backend import atomic_json
 
 RETENTION_DAYS = 30
 SETTLE_SECONDS = 120     # a transcript written this recently may still be open
+_bin_owner = threading.local()
+
+
+@contextlib.contextmanager
+def bin_lock(*, wait=True):
+    """Serialize all bin mutations, including purge outside the collector lock.
+
+    Callers may already hold collect.lock; never acquire it from inside this lock.
+    Nested bin operations in the same thread reuse the OS lock.
+    """
+    root = ah.DATA.resolve()
+    if getattr(_bin_owner, 'root', None) == root:
+        yield True
+        return
+    with ah.file_lock(root / 'trash.lock', wait=wait) as locked:
+        if not locked:
+            yield False
+            return
+        previous = getattr(_bin_owner, 'root', None)
+        _bin_owner.root = root
+        try:
+            yield True
+        finally:
+            _bin_owner.root = previous
+
+
+def serialized_bin(work):
+    @wraps(work)
+    def run(*args, **kwargs):
+        with bin_lock() as locked:
+            if not locked:
+                raise TimeoutError('回收站正在使用，请稍后重试。')
+            return work(*args, **kwargs)
+    return run
 
 
 def trash_root():
@@ -247,8 +283,9 @@ def describe(db, tool, source, path):
         if not sid:
             raise ValueError(f'无法读取会话 ID：{path}')
     elif tool == 'claude':
-        path = within(path, [h / 'projects' for h in ah.CLAUDE_HOMES])
-        home, sid = next(h for h in ah.CLAUDE_HOMES if path.is_relative_to(h.resolve())), path.stem
+        homes = [h.resolve() for h in ah.claude_homes()]
+        path = within(path, [h / 'projects' for h in homes])
+        home, sid = next(h for h in homes if path.is_relative_to(h)), path.stem
     else:
         raise ValueError('未知工具：' + tool)
     key = f'{tool}:{sid}'
@@ -308,6 +345,9 @@ def remove_item(db, item, folder, index, excluded, forks, save):
         for name, field in (('session_index.jsonl', 'id'), ('history.jsonl', 'session_id')):
             save_cache(home / name, field)
     else:
+        import handoff_lifecycle
+        if handoff_lifecycle.claude_running(dict(item, id=item['sid'])):
+            raise ValueError('这条对话正在 Claude 中使用，请先退出对应的 Agent。')
         sidecar = path.with_suffix('')
         if sidecar.is_dir():
             record['sidecar'] = str(sidecar)
@@ -329,6 +369,7 @@ def write_manifest(folder, manifest):
     atomic_json(folder / 'manifest.json', manifest)
 
 
+@serialized_bin
 def delete(db, targets, label=None, excluded=(), forks=None, skip_errors=False):
     """Move targets [{tool, source, path}] into one recycle-bin entry. Returns the manifest.
 
@@ -402,6 +443,7 @@ def entries():
     return out
 
 
+@serialized_bin
 def restore(db, entry):
     folder = trash_root() / entry
     manifest = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
@@ -411,6 +453,9 @@ def restore(db, entry):
         original = Path(record['path'])
         stored = folder / record['stored']
         try:
+            if stored.exists() and (stored.stat().st_size != record['size'] or
+                                    ci.file_hash(stored) != record['sha256']):
+                raise ValueError('回收站文件完整性校验失败，已保留恢复资料。')
             if original.exists():
                 if not (record.get('restoring') or not stored.exists()) or ci.file_hash(original) != record['sha256']:
                     raise ValueError(f'原位置已有文件，未覆盖：{original}')
@@ -419,6 +464,8 @@ def restore(db, entry):
                 write_manifest(folder, manifest)
                 original.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(stored), str(original))
+            if ci.file_hash(original) != record['sha256']:
+                raise ValueError('恢复文件完整性校验失败，已保留恢复资料。')
             if record.get('sidecar') and (folder / (record['stored'] + '.d')).is_dir():
                 if Path(record['sidecar']).exists():
                     raise ValueError('侧目录已有内容，未覆盖：' + record['sidecar'])
@@ -445,9 +492,20 @@ def restore(db, entry):
 
 def purge(entry=None, now=None):
     """Permanently remove one entry, or every entry past its expiry date."""
+    with bin_lock(wait=False) as locked:
+        if not locked:
+            if entry is not None:
+                raise ValueError('回收站正在恢复或整理，请稍后重试。')
+            return []
+        return _purge(entry, now)
+
+
+def _purge(entry, now):
     now = now or utcnow()
     removed = []
     for manifest in entries():
+        if entry is None and any(item.get('restoring') for item in manifest['items']):
+            continue  # Failed recovery journals remain available for retry.
         expired = datetime.datetime.fromisoformat(manifest['expires_at']) <= now
         if manifest['id'] == entry or (entry is None and expired):
             shutil.rmtree(trash_root() / manifest['id'])

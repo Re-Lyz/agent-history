@@ -1,5 +1,7 @@
 # 测试与原生兼容验证
 
+UI 长对话测试主动触发分批渲染，等待渲染及窗口布局完成后核对正文和阅读位置。恢复操作允许云端磁盘耗时；测试退出时先等待后台线程释放临时目录中的锁。
+
 beta 发行检查：`release_audit.py` 检查当前源码／完整可达 Git 历史／可选 ZIP，报告只含分类和位置；`test_release_audit.py` 用临时 Git 验证已删除秘密也能检出。`first_use_check.py 源码包.zip` 从解压源码用临时用户执行安装、首次配置、真实 Markdown 阅读、可选集成、源码移动升级、卸载和保留数据，不访问个人 home。先在独立 venv 安装 requirements-ui.txt；Linux 无桌面用 xvfb-run。`beta_linux_run.py` 是可选本地 Linux helper，需要已准备的验证 CLI／终端缓存，不是产品安装依赖。完整说明见 [beta 记录](../docs/beta-release.md)。
 
 `test_*.py` 为单元测试，使用临时目录和合成数据；`verify_native.py`、`verify_ui_resume.py` 为调用已安装 Codex 的隔离兼容验证脚本，不会随单元测试自动运行。
@@ -21,7 +23,11 @@ python -m unittest discover -s tests -t . -v
 
 `test_markdown_preview.py` 验证标题、嵌套列表、引用、表格对齐、行内格式、未闭合代码围栏、精确代码高亮及不加载资源。隐形窗口场景验证 Markdown／原文切换、代码复制、链接点击、中文搜索、长代码／宽表格横向滚动、分页阅读位置和源文件不变；缺少 Markdown 依赖时，相关检查跳过，原文回退检查继续执行。渲染检查使用合成会话，浏览器与网络请求均替换为测试对象，不实际打开外部页面。
 
+本地链接检查覆盖 file://、Windows 正反斜杠、Codex 路径行号后缀、相对路径、空格编码及缺失文件；只在点击时定位文件，文件管理器被测试对象替代。实际 Tk 场景还核对左列纯标题、右栏模型／版本／分支信息、紧凑段落、工具行无背景条，以及切换回原文后内容不变。
+
 `test_launch_backend.py` 覆盖配置校验／原子保存／坏条目隔离、CLI 管理与恢复准备、环境引用、目录策略、完整结果排序及原生目标 ID。Windows PowerShell 场景调用临时捕获程序／脚本，验证真实参数中的中文、空格、引号、特殊字符与 CodexArgs 数组，不启动 Agent。`test_claude_to_codex.py` 覆盖转换生命周期、完整文字、遗漏统计、重复 UUID、源类型辨别、工具不重放、写锁、来源变化、schema 失败和回收站；UI 验证 Claude → Codex 使用新目标 ID。
+
+`test_framework_safety.py` 覆盖回收站文件损坏／移动期间变化、恢复与到期清理互斥、未完成恢复保留、Claude 活跃或无法检查时禁止删除、自定义 Claude home、POSIX 进程识别、新会话和旧版任务重放、并发任务认领、PID 实例变化及过期检查不覆盖新归属，以及 MCP 请求错误隔离和数据库连接关闭。进程查询使用模拟或临时 proc 目录；通用合成历史夹具默认模拟 Claude 空闲，不扫描本机真实 Agent。新报告记录 PID 与创建标识，旧报告缺少该标识时维持保守保护。
 
 运行 `python tests/verify_claude_to_codex.py` 使用合成 Claude 会话与系统临时目录验证已安装 Codex 的原生列出、resume、读回、写锁、回收站与脱离来源后的重启恢复；不读取真实会话或认证，不发送模型请求。该原生检查不会由 unittest 自动启动。
 

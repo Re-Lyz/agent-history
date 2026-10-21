@@ -165,20 +165,48 @@ def complete_file(path):
 
 def claude_running(row):
     """Only return a boolean, never expose command lines or environment values."""
-    if row['tool'] != 'claude' or os.name != 'nt':
+    if row['tool'] != 'claude':
         return False
+    if os.name != 'nt':
+        return claude_running_posix(row)
     # Native Claude does not hold Codex's per-thread lock. Check idle resumed CLI processes too.
     sid = row['id'].replace("'", "''")
     script = "$s='" + sid + "'; $p=Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { " \
              "$_.ProcessId -ne $PID -and $_.Name -match '^(node|claude)\\.exe$' -and " \
              "$_.CommandLine -and $_.CommandLine.Contains($s) -and $_.CommandLine -match 'claude' }; " \
              "if ($p) { 'busy' } else { 'free' }"
-    result = subprocess.run(['powershell.exe', '-NoLogo', '-NoProfile', '-Command', script],
-                            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15,
-                            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    try:
+        result = subprocess.run(['powershell.exe', '-NoLogo', '-NoProfile', '-Command', script],
+                                capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15,
+                                creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+    except (OSError, subprocess.SubprocessError) as error:
+        raise ValueError('无法检查 Claude 会话进程，文件保留。') from error
     if result.returncode:
         raise ValueError('无法检查 Claude 会话进程，临时副本保留。')
     return result.stdout.strip() == 'busy'
+
+
+def claude_running_posix(row, proc=Path('/proc')):
+    """Check current-user native CLI arguments without exposing their contents."""
+    if not proc.is_dir():
+        raise ValueError('无法检查 Claude 会话进程，文件保留。')
+    uid = os.getuid() if hasattr(os, 'getuid') else None
+    for directory in proc.iterdir():
+        if not directory.name.isdigit():
+            continue
+        try:
+            if uid is not None and directory.stat().st_uid != uid:
+                continue
+            args = (directory / 'cmdline').read_bytes().decode('utf-8', errors='replace').split('\0')
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except OSError as error:
+            raise ValueError('无法检查 Claude 会话进程，文件保留。') from error
+        program = Path(args[0]).name if args else ''
+        if program in ('claude', 'node', 'nodejs') and any('claude' in arg for arg in args) and \
+                any(row['id'] in arg for arg in args):
+            return True
+    return False
 
 
 def verify_native(db, child, final):
@@ -291,7 +319,7 @@ def finish(db, identity, *, manual=False, allow_branch=False):
         return item
     if report['state'] in ('running', 'prepared') or (report['state'] == 'interrupted' or report.get('exit_code', 1) != 0) and not manual:
         raise ValueError('终端尚未正常结束，临时副本保留；结束后可重试同步。')
-    if report.get('pid') and jobs.process_alive(report['pid']) and report['pid'] != os.getpid():
+    if report.get('pid') and jobs.process_matches(report) and report['pid'] != os.getpid():
         raise ValueError('终端报告进程仍在运行，暂不回收临时会话。')
     from setup_backend import load_sources, source_enabled
     scope = load_sources()

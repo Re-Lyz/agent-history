@@ -40,9 +40,9 @@ def reservation_reason(db, source, identity=None, *, wait=True):
                 report['state'] == 'cancelled' or report['state'] in ('exited', 'failed', 'interrupted')
                 and report.get('sync_state') in ('collected', 'not-needed')):
             return ''
-        if report['state'] == 'prepared' and jobs.process_alive(report.get('preparation_pid')):
+        if report['state'] == 'prepared' and jobs.process_matches(report, 'preparation_pid'):
             return '这条对话已准备启动，等待终端接管；请检查已打开的终端。'
-        if jobs.process_alive(report.get('pid')):
+        if jobs.process_matches(report):
             return '这条对话正在使用，请先正常退出对应的 Agent，再重试同步。'
         return '这条对话的启动进程已结束，等待核验已保存内容；请点击“重试同步／刷新续聊”。'
     return ''
@@ -107,7 +107,7 @@ def claim(db, identity):
     lease = db.execute('SELECT * FROM conversation_runs WHERE conversation=?', (source['conversation'],)).fetchone()
     if lease and lease['job'] != identity:
         raise ValueError('这条对话已由另一个启动任务占用。')
-    if report['state'] == 'running' and jobs.process_alive(report.get('pid')):
+    if report['state'] == 'running' and jobs.process_matches(report):
         raise ValueError('这个启动任务已经在运行。')
     store.observe(db, source)
     source = dict(db.execute('SELECT * FROM conversation_versions WHERE id=?', (source['id'],)).fetchone())
@@ -286,7 +286,7 @@ def finish(db, identity, *, manual=False):
     abnormal = report['state'] != 'exited' or report.get('exit_code') != 0
     if report['state'] in ('prepared', 'running') or item and abnormal and not manual:
         raise ValueError('Agent 尚未正常结束，文件保留；退出后可重试同步。')
-    if report.get('pid') != os.getpid() and jobs.process_alive(report.get('pid')):
+    if report.get('pid') != os.getpid() and jobs.process_matches(report):
         raise ValueError('Agent 进程仍在运行，暂不清理。')
     current = lifecycle.recover_version(db, item, 'temporary') if item else lifecycle.version(db, report['version_id'])
     if not current or not Path(json.loads(current['row_json'])['path']).is_file():

@@ -288,6 +288,7 @@ def run_ui():
             self.reader_stamp = None
             self.jobs = {}
             self.pending_jobs = {}
+            self.idle_notice = None
             self.job_serial = 0
             self.checked = set()
             self.candidates = {}
@@ -499,7 +500,7 @@ def run_ui():
                                     values=('Markdown', '原文') if enabled else ('原文',), name='preview_mode')
             mode_box.pack(side='left')
             mode_box.bind('<<ComboboxSelected>>', self.change_preview_mode)
-            self.render_info = tk.StringVar(value='链接点击打开 · 图片仅显示说明' if enabled else
+            self.render_info = tk.StringVar(value='网页打开 · 本地文件定位 · 图片不加载' if enabled else
                                            'Markdown 依赖未安装；请按 README 安装，当前可阅读原文。')
             ttk.Label(format_bar, textvariable=self.render_info, style='Muted.TLabel',
                       wraplength=280).pack(side='left', padx=8)
@@ -513,12 +514,12 @@ def run_ui():
             # long Markdown paragraphs on every pixel of window/pane movement.
             reader_viewport = tk.Frame(middle, bg=P['card'])
             self.text = tk.Text(reader_viewport, wrap='word', state='disabled', font=(FONT, 10), bg=P['card'],
-                                fg=P['text'], relief='flat', padx=22, pady=16, spacing1=2, spacing3=4,
+                                fg=P['text'], relief='flat', padx=22, pady=12, spacing1=0, spacing3=0,
                                 highlightthickness=0, insertbackground=P['text'], selectbackground=P['accent_soft'])
-            self.text.tag_configure('head_user', foreground=P['user'], font=(FONT, 9, 'bold'), spacing1=14)
-            self.text.tag_configure('head_other', foreground=P['assistant'], font=(FONT, 9, 'bold'), spacing1=14)
-            self.text.tag_configure('body', lmargin1=2, lmargin2=2, spacing2=3)
-            self.text.tag_configure('tool', foreground=P['muted'], font=('Consolas', 9), background=P['code_bg'],
+            self.text.tag_configure('head_user', foreground=P['user'], font=(FONT, 9, 'bold'), spacing1=10)
+            self.text.tag_configure('head_other', foreground=P['assistant'], font=(FONT, 9, 'bold'), spacing1=10)
+            self.text.tag_configure('body', lmargin1=2, lmargin2=2, spacing2=1)
+            self.text.tag_configure('tool', foreground=P['muted'], font=('Consolas', 9),
                                     lmargin1=10, lmargin2=10)
             self.text.tag_configure('note', foreground=P['muted'], justify='center')
             self.text.tag_configure('empty', foreground=P['muted'], justify='center', spacing1=120)
@@ -713,11 +714,17 @@ def run_ui():
             return outer
 
         # -------- background work
+        def notice(self, message):
+            self.idle_notice = message
+            self.busy.set(message)
+
         def background(self, work, done=None, *, label='处理中…', key=None, refresh_preview=True, replace=False):
             if key and any(job[0] == key for job in self.jobs.values()):
                 if replace:
                     self.pending_jobs[key] = (work, done, label, refresh_preview)
                 return  # repeated clicks do not start the same operation again
+            if key != 'history-list':
+                self.idle_notice = None
             self.job_serial += 1
             serial = self.job_serial
             self.jobs[serial] = (key, label, refresh_preview)
@@ -769,6 +776,8 @@ def run_ui():
                         self.background(work, callback, label=label, key=completed_job[0], refresh_preview=preview)
                     if self.jobs:
                         self.busy.set(self.jobs[max(self.jobs)][1])
+                    elif self.idle_notice is not None:
+                        self.busy.set(self.idle_notice)
             self.root.after(100, self.poll)
 
         def reindex(self):
@@ -902,7 +911,7 @@ def run_ui():
             def done(readiness):
                 self.apply_readiness(readiness)
                 self.update_preview()
-                self.busy.set('启动环境已重新检查')
+                self.notice('启动环境已重新检查')
 
             self.background(lambda: {target: support.launch_readiness(target) for target in targets},
                             done, label='正在检查启动环境…', key='diagnostics')
@@ -920,7 +929,7 @@ def run_ui():
         def copy_preview(self):
             self.root.clipboard_clear()
             self.root.clipboard_append(self.preview.get())
-            self.busy.set('命令预览已复制')
+            self.notice('命令预览已复制')
 
         def open_log(self):
             path = support.error_log_path()
@@ -1113,11 +1122,8 @@ def run_ui():
                 iid = f"{r['source']}|{r['path']}"
                 self.rows[iid] = r
                 when = datetime.datetime.fromtimestamp(r['modified']).strftime('%m-%d %H:%M')
-                flag = KIND_LABELS.get(r['kind'])
-                if r.get('logical'):
-                    flag = str(r['version_count']) + ' 个版本 / ' + str(r['branches']) + ' 个分支'
                 title = (r['title'] or r['cwd'] or r['id']).replace('\n', ' ')[:120]
-                values = (CHECK_OFF, when, r['source'], r['turns'], f'[{flag}] {title}' if flag else title)
+                values = (CHECK_OFF, when, r['source'], r['turns'], title)
                 if self.tree.exists(iid):
                     self.tree.item(iid, values=values)
                     self.tree.move(iid, '', index)
@@ -1272,6 +1278,27 @@ def run_ui():
         def open_link(self, url):
             if markdown.clickable_url(url):
                 webbrowser.open(url)
+            elif markdown.local_path(url) is not None:
+                try:
+                    path = Path(markdown.local_path(url)).expanduser()
+                    if not path.is_absolute():
+                        rows = self.selected()
+                        base = rows[0].get('cwd') if rows else None
+                        if not base:
+                            raise ValueError('这条对话未记录工作目录，无法定位相对路径。')
+                        path = Path(base) / path
+                    path = path.resolve()
+                    if not path.exists():
+                        raise ValueError('本地路径不存在：' + str(path))
+                    if os.name == 'nt':
+                        command = ['explorer.exe', str(path)] if path.is_dir() else ['explorer.exe', '/select,', str(path)]
+                    else:
+                        command = ['xdg-open', str(path if path.is_dir() else path.parent)]
+                    subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                     creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+                    self.render_info.set('已定位本地路径：' + str(path))
+                except (OSError, ValueError) as error:
+                    self.render_info.set(str(error))
             return 'break'
 
         def show_messages(self, position=None, prepared=None, request=None, anchor=None):
@@ -1330,8 +1357,8 @@ def run_ui():
                             panel.mark = mark
                             self.tool_panels.append(panel)
                             self.markdown_renderer.widgets.append(panel.frame)
-                            self.text.window_create('end', window=panel.frame, padx=4, pady=4)
-                            self.text.insert('end', '\n', 'tool')
+                            self.text.window_create('end', window=panel.frame, padx=4, pady=2)
+                            self.text.insert('end', '\n', 'body')
                     else:
                         for tag, chunk in render_messages([row], None):
                             if tag == 'body' and self.preview_mode.get() == 'Markdown':
@@ -1340,8 +1367,9 @@ def run_ui():
                                         prepared[0].get(index), prepared[1])
                                 else:
                                     yield from self.markdown_renderer.iter_render(row['text'] or '')
-                                self.text.insert('end', '\n', 'body')
                             else:
+                                if self.preview_mode.get() == 'Markdown' and tag.startswith('head_'):
+                                    chunk = chunk.lstrip('\n')
                                 self.text.insert('end', chunk, tag)
                     yield
                 if not count:
@@ -1509,7 +1537,8 @@ def run_ui():
                 self.version_options = {}
                 if member:
                     heads = {item['id'] for item in conversations.tips(db, member['conversation'])}
-                    for item in conversations.members(db, member['conversation']):
+                    members = conversations.members(db, member['conversation'])
+                    for item in members:
                         version_row = json.loads(item['row_json'])
                         kind = '接续版本' if item['parent_revision'] else '原会话'
                         if version_row.get('kind') == 'import':
@@ -1526,6 +1555,12 @@ def run_ui():
             self.title_var.set(r['title'] or '(无标题)')
             lines = [f"{r['tool']} · {r['source']} · {r['turns']} 轮",
                      f"更新于 {(r['updated'] or '')[:16].replace('T', ' ')}", r['id']]
+            if r.get('model'):
+                lines.append('模型：' + r['model'])
+            if KIND_LABELS.get(r['kind']):
+                lines.append('会话类型：' + KIND_LABELS[r['kind']])
+            if member:
+                lines.append(f'版本：{len(members)} 个 · 分支：{len(heads)} 个')
             if origin is not r:
                 lines.append(f"导入自 {origin['tool']} · {origin['source']} · {origin['id'][:13]}")
             reason = self.candidates.get(str(Path(r['path'])))

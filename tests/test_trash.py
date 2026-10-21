@@ -53,6 +53,11 @@ class Fixture(unittest.TestCase):
                         patch.object(ah, 'CLAUDE_HOMES', [self.claude])]
         for p in self.patches:
             p.start()
+        # Synthetic histories must never inspect the host's real Agent processes.
+        # Cleanup callbacks run inside-out after subclasses' nested patches.
+        idle = patch('handoff_lifecycle.claude_running', return_value=False)
+        idle.start()
+        self.addCleanup(idle.stop)
         self.db = ah.connect()
         self.cwd = str(self.root)
         self.path = self.a / 'sessions' / 'rollout-s1.jsonl'
@@ -191,7 +196,8 @@ class TrashTests(Fixture):
         age(path)
         (self.claude / 'history.jsonl').write_text('{"sessionId":"c1","display":"x"}\n{"sessionId":"z"}\n')
         ah.collect(self.db)
-        manifest = trash.delete(self.db, [dict(tool='claude', source='claude', path=str(path))])
+        with patch('handoff_lifecycle.claude_running', return_value=False):
+            manifest = trash.delete(self.db, [dict(tool='claude', source='claude', path=str(path))])
         self.assertFalse(path.exists() or (project / 'c1').exists())
         self.assertNotIn('c1', (self.claude / 'history.jsonl').read_text())
         trash.restore(self.db, manifest['id'])

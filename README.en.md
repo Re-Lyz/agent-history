@@ -36,10 +36,10 @@ Basic installation registers only the viewer. MCP, hooks, background jobs and de
 
 ## Features and limits
 
-- Search, project filtering and sortable columns. Lists load in the background, rapid filter changes keep the latest request, and sorting or loading more rows reuses loaded results. Markdown and highlighted code, message navigation and collapsible / scrolling tool details.
+- Search, project filtering and sortable columns. The list shows plain titles; model, version and branch details appear on the right. Lists load in the background, rapid filter changes keep the latest request, and sorting or loading more rows reuses loaded results. Markdown and highlighted code, message navigation and collapsible / scrolling tool details. Local links reveal files in the file manager, including absolute paths, paths relative to the conversation directory and file:// targets.
 - Logical conversation names and configurable launch profiles, programs, argument arrays, favorites and default launch entries.
 - One managed Agent per logical conversation: native resume in the same connection; cross-Agent handoffs promote the latest target and retire verified, fully covered older transcripts. Interrupted tasks preserve files for recovery. Revision backups remain separate; existing parallel branches must be merged first.
-- Recoverable deletion with active-session / writer-lock protection; optional stdlib MCP history readers.
+- Recoverable deletion verifies transcript integrity before and after restoring. Restore and expiry cleanup are serialized; incomplete recovery entries stay available for retry. Active-session / writer-lock protection and optional stdlib MCP history readers.
 
 Locally verified on Windows / Python 3.12 and Ubuntu 20.04 / WSL2 / WSLg / Python 3.12.2 / xterm, using Codex CLI 0.159.2. [GitHub-hosted Windows / Ubuntu 22.04 CI](https://github.com/Re-Lyz/agent-history/actions/runs/38031469719) also passed regressions, release packaging, temporary-user installation and all four zero-model-request native Codex checks. Actual Claude CLI interactive resume, other Linux desktop terminals, native Wayland and real systemd scheduling remain unverified. macOS is not supported yet. Temporary user environments were exercised; this is not evidence of fresh OS installation testing.
 

@@ -5,7 +5,8 @@ optional desktop dependencies have not been installed. See requirements-ui.txt.
 """
 from dataclasses import dataclass
 from functools import lru_cache
-from urllib.parse import urlsplit
+import re
+from urllib.parse import unquote, urlsplit
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,28 @@ def clickable_url(url):
         return False
 
 
+def local_path(url):
+    """Decode a local Markdown target, without touching files or executing it."""
+    if not url or any(ord(char) < 32 for char in url):
+        return None
+    try:
+        decoded = unquote(url.split('#', 1)[0].split('?', 1)[0])
+        if re.match(r'^[A-Za-z]:[\\/]', decoded):
+            value = decoded
+        else:
+            parsed = urlsplit(url)
+            if parsed.scheme.lower() not in ('', 'file') or parsed.netloc not in ('', 'localhost'):
+                return None
+            value = unquote(parsed.path)
+        if not value or any(ord(char) < 32 for char in value) or value.startswith(('//', '\\\\')):
+            return None
+        if re.match(r'^/[A-Za-z]:[\\/]', value):
+            value = value[1:]
+        return re.sub(r':\d+(?::\d+)?$', '', value)
+    except ValueError:
+        return None
+
+
 def inline_spans(tokens, base=()):
     spans, styles, links = [], list(base), []
     names = {'strong': 'bold', 'em': 'italic', 's': 'strike'}
@@ -76,6 +99,8 @@ def inline_spans(tokens, base=()):
 def _parse(source):
     from markdown_it import MarkdownIt
     parser = MarkdownIt('commonmark', dict(html=False, linkify=False)).enable(['table', 'strikethrough'])
+    validate = parser.validateLink
+    parser.validateLink = lambda target: validate(target) or local_path(target) is not None
     tokens = parser.parse(source)
     output, styles, lists = [], [], []
     quote_depth, index = 0, 0
@@ -86,7 +111,7 @@ def _parse(source):
             styles.append(token.tag)
         elif kind == 'heading_close':
             styles.pop()
-            output.append(Span('\n\n'))
+            output.append(Span('\n', ('paragraph_end',)))
         elif kind == 'blockquote_open':
             quote_depth += 1
             styles.append(f'quote_{min(quote_depth, 6)}')
@@ -107,7 +132,7 @@ def _parse(source):
         elif kind == 'list_item_close':
             styles.pop()
         elif kind == 'paragraph_close':
-            output.append(Span('\n' if token.hidden else '\n\n', tuple(styles)))
+            output.append(Span('\n', tuple(styles) + (() if token.hidden else ('paragraph_end',))))
         elif kind == 'inline':
             output.extend(inline_spans(token.children, tuple(styles)))
         elif kind in ('fence', 'code_block'):
@@ -177,6 +202,7 @@ class TkRenderer:
         text.tag_configure('md_inline_code', background=palette['code_bg'])
         text.tag_configure('md_strike', overstrike=True)
         text.tag_configure('md_link', foreground=palette['user'], underline=True)
+        text.tag_configure('md_paragraph_end', spacing3=6)
         text.tag_configure('md_rule', foreground=palette['line'])
         text.tag_configure('md_image', foreground=palette['muted'])
         text.tag_configure('md_table', wrap='none', background=palette['code_bg'], spacing1=3, spacing3=3)
@@ -221,10 +247,10 @@ class TkRenderer:
                 tags += ['md_quote', 'md_' + name]
             elif name.startswith('list_'):
                 tags.append('md_' + name)
-            elif name in ('inline_code', 'strike', 'rule', 'image', 'code', 'table', 'table_header'):
+            elif name in ('inline_code', 'strike', 'rule', 'image', 'code', 'table', 'table_header', 'paragraph_end'):
                 tags.append('md_' + name)
         tags.append(self.font_tag(styles))
-        if span.href and clickable_url(span.href):
+        if span.href and (clickable_url(span.href) or local_path(span.href) is not None):
             tag = f'md_href_{len(self.dynamic_tags)}'
             self.dynamic_tags.append(tag)
             self.commands.append(self.text.tag_bind(tag, '<Button-1>', lambda event, href=span.href: self.open_link(href)))

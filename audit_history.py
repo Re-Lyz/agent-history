@@ -248,7 +248,7 @@ def audit(output, refresh=False):
                         empty=counts[key]['user'] == 0 and counts[key]['tool_call'] == 0 and genuinely_empty(path, meta)))
                 except (OSError, ValueError, KeyError, StopIteration) as error:
                     errors.append({'path': str(path), 'error': str(error)})
-    for home in ah.CLAUDE_HOMES:
+    for home in ah.claude_homes():
         for path in (home / 'projects').rglob('*.jsonl'):
             try:
                 stat = path.stat()

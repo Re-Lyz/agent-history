@@ -546,7 +546,7 @@ def prepare_new(target, cwd, expected_plan=None):
     if profile['type'] == 'codex':
         roots = [str(dict(ah.codex_homes())[profile['connection']])]
     elif profile['type'] == 'claude':
-        roots = [str(home / 'projects') for home in ah.CLAUDE_HOMES]
+        roots = [str(home / 'projects') for home in ah.claude_homes()]
     prepared = dict(cwd=plan['cwd'], inner=inner, env=environment, history_roots=roots,
                     session=None, kind='new', tool=profile['type'])
     import launch_jobs

@@ -37,6 +37,25 @@ class MarkdownTests(unittest.TestCase):
         indented = md.parse('    x = 1\n    y = 2\n')
         self.assertEqual(next(element for element in indented if isinstance(element, md.Code)).text, 'x = 1\ny = 2\n')
 
+    def test_local_links_preserve_labels_and_decode_native_path_forms(self):
+        source = '[说明](file:///C:/demo/report.md:12) [代码](/C:/demo/app.py:8) ' \
+                 '[相对路径](<../docs/local note.md>) [反斜杠](<C:\\demo\\app.py:3>)'
+        spans = [span for span in md.parse(source) if isinstance(span, md.Span) and span.href]
+        self.assertEqual([span.text for span in spans], ['说明', '代码', '相对路径', '反斜杠'])
+        self.assertEqual([md.local_path(span.href) for span in spans],
+                         ['C:/demo/report.md', 'C:/demo/app.py', '../docs/local note.md', 'C:\\demo\\app.py'])
+        self.assertEqual(md.local_path('/tmp/demo/report.md:4:2'), '/tmp/demo/report.md')
+        self.assertEqual(md.local_path('file:///tmp/local%20note.md#L4'), '/tmp/local note.md')
+        for value in ('javascript:alert(1)', 'https://example.com', 'file://remote-host/private/file.md',
+                      '//remote-host/file.md', 'file:///tmp/bad%00name', '#section'):
+            self.assertIsNone(md.local_path(value))
+
+    def test_paragraphs_use_one_line_break_without_changing_source(self):
+        source = '# Heading\n\nFirst paragraph.\n\nSecond paragraph.'
+        spans = [span for span in md.parse(source) if isinstance(span, md.Span)]
+        self.assertEqual(''.join(span.text for span in spans), 'Heading\nFirst paragraph.\nSecond paragraph.\n')
+        self.assertEqual(sum('paragraph_end' in span.styles for span in spans), 3)
+
     def test_highlighting_never_changes_code_or_adds_a_newline(self):
         for language, code in (('python', 'def f():\n    return "中文"'), ('json', '{"n": 12}'),
                                ('powershell', 'Write-Output "中文"'), ('not-a-language', 'x\t= 1\n')):

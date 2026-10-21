@@ -26,6 +26,7 @@ def checked_inner(inner):
 def run(identity, inner):
     code = 1
     claimed = False
+    rejected = False
     try:
         import single_conversation
         with ah.collect_lock(wait=True) as locked:
@@ -33,23 +34,27 @@ def run(identity, inner):
                 raise TimeoutError('History collector is busy.')
             import contextlib
             with contextlib.closing(ah.connect()) as db:
+                jobs.check_claim(jobs.read(identity))
                 single_conversation.claim(db, identity)
-                jobs.update(identity, state='running', pid=os.getpid(), attempts=jobs.read(identity)['attempts'] + 1)
+                jobs.claim(identity)
                 claimed = True
         argv = ['powershell.exe', '-NoLogo', '-ExecutionPolicy', 'Bypass', *checked_inner(inner)] if os.name == 'nt' else inner
         result = subprocess.run(argv, shell=False)
         code = result.returncode
         jobs.update(identity, state='exited' if code == 0 else 'failed', exit_code=code,
                     error='' if code == 0 else 'Agent 命令非正常结束；请查看此终端的具体错误。')
+    except jobs.LaunchRejected:
+        rejected = True
     except (OSError, ValueError, TimeoutError) as error:
         existing = jobs.read(identity)
-        if not claimed and existing['state'] == 'running' and jobs.process_alive(existing.get('pid')):
+        if not claimed and existing['state'] == 'running' and jobs.process_matches(existing):
+            rejected = True
             return code
         jobs.update(identity, state='failed', exit_code=None,
                     error=str(error) if isinstance(error, ValueError) else type(error).__name__ + ': 无法启动终端命令。')
     finally:
         if not claimed:
-            if jobs.read(identity)['state'] != 'running':
+            if not rejected and jobs.read(identity)['state'] != 'running':
                 jobs.update(identity, sync_state='failed', sync_error='启动未获得独占权；请查看最新主对话和启动记录。')
             return code
         try:

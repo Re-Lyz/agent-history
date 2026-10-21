@@ -2,6 +2,7 @@
 import contextlib
 import datetime as dt
 import json
+import itertools
 import os
 from pathlib import Path
 import tempfile
@@ -56,14 +57,33 @@ class ViewerInteractionTests(unittest.TestCase):
                 ''.join(json.dumps(record, ensure_ascii=False) + '\n' for record in records), encoding='utf-8')
         with contextlib.closing(ah.connect()) as db:
             ah.collect(db)
+        self.workers = []
+        thread_type = threading.Thread
+
+        def thread(*args, **kwargs):
+            worker = thread_type(*args, **kwargs)
+            self.workers.append(worker)
+            return worker
+
+        self.thread_patch = patch.object(ui.threading, 'Thread', side_effect=thread)
+        self.thread_patch.start()
 
     def tearDown(self):
         with contextlib.suppress(self.tk.TclError):
             for callback in self.root.tk.call('after', 'info'):
                 self.root.tk.call('after', 'cancel', callback)
             self.root.destroy()
+        # A failed assertion can leave a restore/index worker holding collect.lock.
+        # Drain it before unpatching its temporary Agent homes or removing files.
+        deadline = time.monotonic() + 30
+        for worker in self.workers:
+            if worker.ident is not None:
+                worker.join(max(0, deadline - time.monotonic()))
+        self.thread_patch.stop()
         for item in reversed(self.patches):
             item.stop()
+        if any(worker.is_alive() for worker in self.workers):
+            self.fail('Viewer worker did not stop; temporary files retained for diagnosis.')
         self.temp.cleanup()
 
     def widgets(self):
@@ -113,6 +133,14 @@ class ViewerInteractionTests(unittest.TestCase):
             name in str(self.root.tk.call('after', 'info', job))
             for job in self.root.tk.call('after', 'info')
             for name in ('place_sashes', 'finish', 'sync_region', '_fit_height')))
+
+    def wait_reader(self):
+        # update() can return between the viewer's scheduled rendering batches.
+        # Wait for completion and startup geometry before reading or scrolling.
+        self.wait(lambda: not any(
+            'batch' in str(self.root.tk.call('after', 'info', job))
+            for job in self.root.tk.call('after', 'info')), timeout=30)
+        self.wait_layout()
 
     def exercise(self, interact, expect_launch=False):
         errors = []
@@ -533,6 +561,85 @@ class ViewerInteractionTests(unittest.TestCase):
             self.exercise(interact)
 
     @unittest.skipUnless(md.available(), 'Install requirements-ui.txt for Markdown UI verification.')
+    def test_clean_titles_local_links_compact_paragraphs_and_tool_rows(self):
+        import conversation_store
+        document = self.path / 'docs' / 'local note.md'
+        document.parent.mkdir()
+        document.write_text('Synthetic local documentation', encoding='utf-8')
+        executable = self.path / 'inert-fixture.exe'
+        executable.write_bytes(b'not an executable; synthetic link target')
+        source = 'First paragraph.\n\nSecond paragraph.\n\n' \
+                 '[本地说明](<' + document.as_uri() + ':12>)\n\n[相对说明](<docs/local note.md>)'
+        path = self.path / 'a' / 'sessions' / 'two.jsonl'
+        records = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+        records[1]['payload']['content'][0]['text'] = '简洁会话标题'
+        records.extend([
+            dict(type='turn_context', payload=dict(model='synthetic-model')),
+            dict(type='response_item', payload=dict(type='message', role='assistant',
+                 content=[dict(type='output_text', text=source)])),
+            dict(type='response_item', payload=dict(type='function_call', name='synthetic_tool',
+                 call_id='local-demo', arguments='{}')),
+            dict(type='response_item', payload=dict(type='function_call_output', call_id='local-demo', output='fixture result'))])
+        path.write_text(''.join(json.dumps(row, ensure_ascii=False) + '\n' for row in records), encoding='utf-8')
+        original_bytes = path.read_bytes()
+        with contextlib.closing(ah.connect()) as db:
+            ah.collect(db)
+            conversation_store.enroll(db, dict(ah.resolve(db, 'two')))
+        panels = []
+        panel_type = ui.ToolPanel
+        def panel(*args, **kwargs):
+            value = panel_type(*args, **kwargs)
+            panels.append(value)
+            return value
+        def interact(root):
+            root.deiconify()
+            tree = next(w for w in self.widgets() if isinstance(w, self.ttk.Treeview) and 'check' in w.cget('columns'))
+            self.wait(lambda: len(tree.get_children()) == 2)
+            iid = next(item for item in tree.get_children() if 'two.jsonl' in item)
+            self.assertEqual(tree.set(iid, 'title'), '简洁会话标题')
+            tree.selection_set(iid)
+            self.wait(lambda: panels)
+            app = panels[0].app
+            self.assertIn('模型：synthetic-model', app.info.get())
+            self.assertIn('版本：1 个 · 分支：1 个', app.info.get())
+            self.assertIn('First paragraph.\nSecond paragraph.', app.text.get('1.0', 'end'))
+            self.assertEqual(app.text.tag_cget('tool', 'background'), '')
+            self.assertFalse(panels[0].expanded)
+            browser.assert_not_called()
+            opener.assert_not_called()
+            links = [tag for tag in app.text.tag_names() if tag.startswith('md_href_')]
+            self.assertEqual(len(links), 2)
+            start = app.text.tag_ranges(links[0])[0]
+            app.text.see(start)
+            root.update()
+            box = app.text.bbox(start)
+            self.assertIsNotNone(box)
+            app.text.event_generate('<Motion>', x=box[0] + 2, y=box[1] + 2)
+            app.text.event_generate('<Button-1>', x=box[0] + 2, y=box[1] + 2)
+            root.update()
+            self.assertEqual(opener.call_count, 1)
+            self.assertEqual(opener.call_args.args[0][-1], str(document if os.name == 'nt' else document.parent))
+            app.open_link('docs/local%20note.md:4')
+            self.assertEqual(opener.call_count, 2)
+            app.open_link(executable.as_uri())
+            self.assertEqual(opener.call_args.args[0][0], 'explorer.exe' if os.name == 'nt' else 'xdg-open')
+            before = opener.call_count
+            app.open_link('docs/missing-file.md')
+            self.assertEqual(opener.call_count, before)
+            self.assertIn('本地路径不存在', app.render_info.get())
+            mode = next(w for w in self.widgets() if w.winfo_name() == 'preview_mode')
+            mode.set('原文')
+            mode.event_generate('<<ComboboxSelected>>')
+            root.update()
+            self.assertIn(source, app.text.get('1.0', 'end'))
+            self.assertEqual(path.read_bytes(), original_bytes)
+            browser.assert_not_called()
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        with patch.object(ui, 'ToolPanel', side_effect=panel), patch.object(ui.subprocess, 'Popen') as opener, \
+                patch.object(ui.webbrowser, 'open') as browser:
+            self.exercise(interact)
+
+    @unittest.skipUnless(md.available(), 'Install requirements-ui.txt for Markdown UI verification.')
     def test_markdown_long_code_unclosed_fence_and_prepending_preserve_reader(self):
         path = self.path / 'a' / 'sessions' / 'one.jsonl'
         records = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
@@ -547,7 +654,7 @@ class ViewerInteractionTests(unittest.TestCase):
             tree = next(w for w in self.widgets() if isinstance(w, self.ttk.Treeview) and 'check' in w.cget('columns'))
             self.wait(lambda: len(tree.get_children()) == 2)
             tree.selection_set(next(item for item in tree.get_children() if 'one.jsonl' in item))
-            root.update()
+            self.wait_reader()
             reader = next(w for w in self.widgets() if isinstance(w, self.tk.Text) and 'body' in w.tag_names())
             rendered = reader.get('1.0', 'end')
             self.assertIn('后一条标题', rendered)
@@ -557,11 +664,11 @@ class ViewerInteractionTests(unittest.TestCase):
             self.assertEqual(len([w for w in self.widgets() if isinstance(w, self.ttk.Button) and
                                  w.cget('text') == '复制代码']), 1)
             reader.yview_moveto(0.5)
-            root.update()
+            self.wait_reader()
             anchor = reader.index('@0,0')
             visible = reader.get(anchor, f'{anchor}+30c')
             self.button('加载更早消息').invoke()
-            root.update()
+            self.wait_reader()
             anchor = reader.index('@0,0')
             self.assertEqual(reader.get(anchor, f'{anchor}+30c'), visible)
             self.assertIn('早期代码', reader.get('1.0', 'end'))
@@ -570,12 +677,14 @@ class ViewerInteractionTests(unittest.TestCase):
             mode = next(w for w in self.widgets() if w.winfo_name() == 'preview_mode')
             mode.set('原文')
             mode.event_generate('<<ComboboxSelected>>')
-            root.update()
+            self.wait_reader()
             self.assertIn('```python', reader.get('1.0', 'end'))
             # Switching format keeps the reader in the same message, not at the end.
             self.assertLess(reader.yview()[0], 0.9)
             root.tk.call(root.protocol('WM_DELETE_WINDOW'))
-        self.exercise(interact)
+        # Force a yield after every render step, even on fast local machines.
+        with patch.object(ui.time, 'perf_counter', side_effect=itertools.count(0, 0.009)):
+            self.exercise(interact)
 
     def test_reader_search_expands_older_messages_and_paging_preserves_selection(self):
         def interact(root):
@@ -584,30 +693,30 @@ class ViewerInteractionTests(unittest.TestCase):
             self.wait(lambda: len(tree.get_children()) == 2)
             iid = next(item for item in tree.get_children() if 'one.jsonl' in item)
             tree.selection_set(iid)
-            root.update()
+            self.wait_reader()
             reader = next(w for w in self.widgets() if isinstance(w, self.tk.Text) and 'body' in w.tag_names())
             self.assertNotIn('原始问题 one 0\n', reader.get('1.0', 'end'))
             self.assertTrue(any('400 / 450' in status for status in self.statuses()))
             reader.yview_moveto(0.4)
-            root.update()
+            self.wait_reader()
             anchor = reader.index('@0,0')
             visible = reader.get(anchor, f'{anchor}+30c')
             self.button('加载更早消息').invoke()
-            root.update()
+            self.wait_reader()
             anchor = reader.index('@0,0')
             self.assertEqual(reader.get(anchor, f'{anchor}+30c'), visible)
             self.assertIn('原始问题 one 0\n', reader.get('1.0', 'end'))
             self.assertTrue(self.button('加载更早消息').instate(['disabled']))
             # Reselecting a different transcript resets the page size.
             tree.selection_set(next(item for item in tree.get_children() if 'two.jsonl' in item))
-            root.update()
+            self.wait_reader()
             tree.selection_set(iid)
-            root.update()
+            self.wait_reader()
             root.event_generate('<Control-f>')
-            root.update()
+            self.wait_reader()
             find = next(w for w in self.widgets() if w.winfo_name() == 'conversation_find')
             find.insert(0, '原始问题 one 0\n')
-            root.update()
+            self.wait_reader()
             self.assertIn('原始问题 one 0\n', reader.get('1.0', 'end'))
             self.assertEqual(len(reader.tag_ranges('find')), 2)
             self.button('下一处').invoke()
@@ -617,7 +726,9 @@ class ViewerInteractionTests(unittest.TestCase):
             find.delete(0, 'end')
             self.assertEqual(reader.tag_ranges('find'), ())
             root.tk.call(root.protocol('WM_DELETE_WINDOW'))
-        self.exercise(interact)
+        # Force a yield after every render step, even on fast local machines.
+        with patch.object(ui.time, 'perf_counter', side_effect=itertools.count(0, 0.009)):
+            self.exercise(interact)
 
     def test_more_rows_reaches_older_transcripts_and_filters_reset_page(self):
         # Real complete files survive the startup collector and exercise its list boundary.
@@ -758,7 +869,9 @@ class ViewerInteractionTests(unittest.TestCase):
             root.deiconify()
             tree = next(w for w in self.widgets() if isinstance(w, self.ttk.Treeview) and 'check' in w.cget('columns'))
             self.wait(lambda: len(tree.get_children()) == 2)
-            grouped = next(iid for iid in tree.get_children() if '个版本' in tree.set(iid, 'title'))
+            grouped = next(iid for iid in tree.get_children() if any(
+                iid.endswith(row['path']) for row in (original, copied)))
+            self.assertNotIn('个版本', tree.set(grouped, 'title'))
             tree.selection_set(grouped)
             root.update()
             self.assertTrue(self.button('打开终端并继续').instate(['disabled']))
@@ -807,7 +920,8 @@ class ViewerInteractionTests(unittest.TestCase):
         def interact(root):
             tree = next(w for w in self.widgets() if isinstance(w, self.ttk.Treeview) and 'check' in w.cget('columns'))
             self.wait(lambda: len(tree.get_children()) == 2)
-            grouped = next(iid for iid in tree.get_children() if '个版本' in tree.set(iid, 'title'))
+            grouped = next(iid for iid in tree.get_children() if any(
+                iid.endswith(row['path']) for row in (original, copied)))
             tree.selection_set(grouped)
             root.update()
             with Path(original['path']).open('a', encoding='utf-8') as stream:
@@ -1050,7 +1164,7 @@ class ViewerInteractionTests(unittest.TestCase):
             self.assertEqual(recycle.selection(), (manifest['id'],))
             self.button('恢复所选').invoke()
             self.button('恢复所选').invoke()
-            self.wait(lambda: '恢复结果：1 项成功' in details.get('1.0', 'end'))
+            self.wait(lambda: '恢复结果：1 项成功' in details.get('1.0', 'end'), timeout=30)
             self.assertIn(str(path), details.get('1.0', 'end'))
             self.assertIn('[已恢复] a · two', details.get('1.0', 'end'))
             self.assertEqual(len(recycle.get_children()), 0)
@@ -1088,14 +1202,14 @@ class ViewerInteractionTests(unittest.TestCase):
             self.wait(lambda: abs(pane.sashpos(0) / pane.winfo_width() - 0.4) < 0.01)
             iid = next(item for item in tree.get_children() if 'one.jsonl' in item)
             tree.selection_set(iid)
-            root.update()
+            self.wait_reader()
             self.choose_target('codexc b')
             cwd = next(w for w in self.widgets() if isinstance(w, self.ttk.Entry) and w.get() == str(self.path))
             cwd.delete(0, 'end')
             cwd.insert(0, str(self.path / 'b'))
             self.button('全选').invoke()
             reader.yview_moveto(0.25)
-            root.update()
+            self.wait_reader()
             position = reader.index('@0,0')
             self.button('刷新历史').invoke()
             self.wait(lambda: '2 条' in self.statuses())
@@ -1107,7 +1221,7 @@ class ViewerInteractionTests(unittest.TestCase):
             project = next(w for w in self.widgets() if isinstance(w, self.ttk.Combobox) and '全部项目' in w.cget('values'))
             project.set(str(self.path))
             project.event_generate('<<ComboboxSelected>>')
-            root.update()
+            self.wait_reader()
             self.assertEqual(len(tree.get_children()), 2)
             self.button('复制预览').invoke()
             self.assertIn('-From a -Session one' if os.name == 'nt' else 'codex resume', root.clipboard_get())

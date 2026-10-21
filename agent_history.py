@@ -779,22 +779,23 @@ MCP_TOOLS = [
 
 
 def mcp_call(name, args):
-    with collect_lock(wait=False) as locked:
-        db = connect()
-        if locked:
-            collect(db)       # cheap incremental refresh; skipped while the scheduled run holds the lock
-    if name == 'search_history':
-        rows = search(db, args['query'], args.get('tool'), args.get('cwd'), limit=args.get('limit', 20))
-        return '\n\n'.join(f"[{r['tool']}:{r['source']}] {r['sid']} ({r['ts']}) {r['title']}\n"
-                           f"  cwd={r['cwd']}\n  {r['role']}: {r['snippet']}" for r in rows) or 'No matches.'
-    if name == 'list_sessions':
-        rows = list_sessions(db, args.get('tool'), args.get('query'), args.get('limit', 30))
-        return '\n'.join(session_line(r) for r in rows) or 'No sessions.'
-    if name == 'read_session':
-        session = resolve(db, args['id'])
-        roles = None if args.get('include_tools') else ['user', 'assistant', 'compacted', 'agent']
-        return clip(render(session, messages(db, session['key'], roles, tail=args.get('tail'))), 60_000)
-    raise ValueError('Unknown tool ' + name)
+    with contextlib.ExitStack() as stack:
+        with collect_lock(wait=False) as locked:
+            db = stack.enter_context(contextlib.closing(connect()))
+            if locked:
+                collect(db)       # skipped while a scheduled run holds the lock
+        if name == 'search_history':
+            rows = search(db, args['query'], args.get('tool'), args.get('cwd'), limit=args.get('limit', 20))
+            return '\n\n'.join(f"[{r['tool']}:{r['source']}] {r['sid']} ({r['ts']}) {r['title']}\n"
+                               f"  cwd={r['cwd']}\n  {r['role']}: {r['snippet']}" for r in rows) or 'No matches.'
+        if name == 'list_sessions':
+            rows = list_sessions(db, args.get('tool'), args.get('query'), args.get('limit', 30))
+            return '\n'.join(session_line(r) for r in rows) or 'No sessions.'
+        if name == 'read_session':
+            session = resolve(db, args['id'])
+            roles = None if args.get('include_tools') else ['user', 'assistant', 'compacted', 'agent']
+            return clip(render(session, messages(db, session['key'], roles, tail=args.get('tail'))), 60_000)
+        raise ValueError('Unknown tool ' + name)
 
 
 def serve_mcp():
@@ -803,6 +804,8 @@ def serve_mcp():
         try:
             msg = json.loads(line)
         except ValueError:
+            continue
+        if not isinstance(msg, dict):
             continue
         mid, method = msg.get('id'), msg.get('method')
         if mid is None:
@@ -813,10 +816,12 @@ def serve_mcp():
         elif method == 'tools/list':
             result = dict(tools=MCP_TOOLS)
         elif method == 'tools/call':
-            params = msg.get('params', {})
             try:
+                params = msg.get('params') or {}
+                if not isinstance(params, dict) or not isinstance(params.get('arguments', {}), dict):
+                    raise ValueError('工具参数必须是对象。')
                 result = dict(content=[dict(type='text', text=mcp_call(params.get('name'), params.get('arguments') or {}))])
-            except (ValueError, KeyError, sqlite3.Error) as error:
+            except (ValueError, KeyError, TypeError, OSError, sqlite3.Error) as error:
                 result = dict(content=[dict(type='text', text=f'Error: {error}')], isError=True)
         elif method == 'ping':
             result = {}
