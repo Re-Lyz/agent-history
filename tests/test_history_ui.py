@@ -1108,7 +1108,7 @@ class ViewerInteractionTests(unittest.TestCase):
             inner = root.nametowidget(canvas.itemcget(window, 'window'))
             labels = [w for w in inner.winfo_children() if isinstance(w, (self.ttk.Label, self.tk.Label))]
             self.wait(lambda: int(canvas.itemcget(window, 'width')) == canvas.winfo_width())
-            self.wait_layout()
+            self.wait_reader()
             widths, regions = [], []
             original_label = self.tk.Widget.configure
             original_canvas = canvas.configure
@@ -1125,6 +1125,7 @@ class ViewerInteractionTests(unittest.TestCase):
 
             content = next(w for w in self.widgets() if isinstance(w, self.tk.Text) and 'body' in w.tag_names())
             before = content.get('1.0', 'end')
+            self.assertIn('one 449', before)
             with patch.object(self.tk.Widget, 'configure', configure_label), \
                     patch.object(canvas, 'configure', configure_canvas), \
                     patch.object(content, 'place', wraps=content.place) as resize_reader, \
