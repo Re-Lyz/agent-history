@@ -19,6 +19,31 @@ def versions(db, conversation):
         'SELECT * FROM conversation_versions WHERE conversation=?', (conversation,))]
 
 
+@contextlib.contextmanager
+def idle_native_versions(db, conversation):
+    """Hold each native session once, even if several versions alias its lock."""
+    import handoff_lifecycle as lifecycle
+    homes, seen = dict(ah.codex_homes()), set()
+    with contextlib.ExitStack() as locks:
+        for item in versions(db, conversation):
+            row = json.loads(item['row_json'])
+            if not Path(row['path']).is_file():
+                continue
+            if row['tool'] == 'codex':
+                if row['source'] not in homes:
+                    raise ValueError('原生来源已不可用，无法核对会话状态。')
+                key = (row['tool'], str(homes[row['source']].resolve()), row['id'])
+            else:
+                key = (row['tool'], str(Path(row['path']).resolve()))
+            if key in seen:
+                continue
+            seen.add(key)
+            if not locks.enter_context(lifecycle.session_lock(row)) or lifecycle.claude_running(row):
+                yield False
+                return
+        yield True
+
+
 def release(db, identity):
     with db:
         db.execute('DELETE FROM conversation_runs WHERE job=?', (identity,))
@@ -36,16 +61,80 @@ def reservation_reason(db, source, identity=None, *, wait=True):
         except (OSError, ValueError):
             return '这条对话有未完成的启动记录，请先检查启动记录并恢复同步。'
         owned = lifecycle.get(db, lease['job'])
-        if owned and owned['state'] == 'cleaned' or not owned and (
+        if report['state'] == 'cancelled' and report.get('sync_state') == 'not-needed' or \
+                report.get('session_detached') and report.get('sync_state') == 'collected' or \
+                owned and owned['state'] == 'cleaned' or not owned and (
                 report['state'] == 'cancelled' or report['state'] in ('exited', 'failed', 'interrupted')
                 and report.get('sync_state') in ('collected', 'not-needed')):
             return ''
         if report['state'] == 'prepared' and jobs.process_matches(report, 'preparation_pid'):
-            return '这条对话已准备启动，等待终端接管；请检查已打开的终端。'
+            try:
+                with idle_native_versions(db, source['conversation']) as free:
+                    if not free:
+                        return '原生会话正在 Agent 中使用，但启动记录尚未确认接管；请在原终端继续，切勿重复启动。'
+            except (OSError, ValueError):
+                return '无法核对原生会话是否正在使用，已保留启动预约；请检查原终端。'
+            return '这条对话已准备启动，等待终端接管；若终端未启动，可取消未接管启动后重试。'
         if jobs.process_matches(report):
             return '这条对话正在使用，请先正常退出对应的 Agent，再重试同步。'
         return '这条对话的启动进程已结束，等待核验已保存内容；请点击“重试同步／刷新续聊”。'
     return ''
+
+
+def cancel_prepared(db, identity):
+    """Caller holds collect.lock. Keep every native file and immutable revision."""
+    import handoff_lifecycle as lifecycle
+    report = jobs.read(identity)
+    if report['state'] != 'prepared' or report.get('attempts', 0) != 0:
+        raise ValueError('终端已接管或任务已结束，不能取消未接管启动。')
+    lease = db.execute('SELECT * FROM conversation_runs WHERE job=?', (identity,)).fetchone()
+    if not lease:
+        raise ValueError('此启动没有对应的会话预约，请检查启动记录。')
+    with idle_native_versions(db, lease['conversation']) as free:
+        if not free:
+            raise ValueError('原生会话仍在 Agent 中使用，未取消预约。请先确认原终端已切走或退出。')
+        jobs.cancel_prepared(identity)
+        if lifecycle.get(db, identity):
+            lifecycle.update(db, identity, state='cancelled', error='')
+        release(db, identity)
+    return dict(cancelled=True, files_preserved=True)
+
+
+def detach_session(db, identity):
+    """Explicit native /resume recovery; retain all native files and revisions.
+
+    Caller holds collect.lock. Normal exit may finalize cleanup later, provided
+    no newer owner exists. A live terminal is never reported as exited.
+    """
+    import handoff_lifecycle as lifecycle
+    report = jobs.read(identity)
+    if report['state'] != 'running':
+        raise ValueError('此任务不是运行中状态；未接管启动请使用取消入口，已退出任务请重试同步。')
+    if not report.get('native_session_observed'):
+        raise ValueError('此任务尚未记录原生会话接管，无法区分启动中与已切出；请在原终端正常退出后同步。')
+    lease = db.execute('SELECT * FROM conversation_runs WHERE job=?', (identity,)).fetchone()
+    if not lease:
+        if report.get('session_detached'):
+            return dict(synced=True, files_preserved=True)
+        raise ValueError('此任务没有对应的会话预约，请检查启动记录。')
+    owned = lifecycle.get(db, identity)
+    current = lifecycle.version(db, owned['temporary_version'] if owned else report['version_id'])
+    row = json.loads(current['row_json'])
+    with idle_native_versions(db, lease['conversation']) as free:
+        if not free:
+            raise ValueError('原对话仍持有原生写锁或仍在 Agent 中运行，不能认定已切出。')
+        if not Path(row['path']).is_file():
+            raise ValueError('原会话文件已不存在，保留记录等待检查。')
+        lifecycle.complete_file(row['path'])
+        store.observe(db, current)
+        current = lifecycle.version(db, current['id'])
+        latest(db, current)
+        jobs.detach_session(identity)
+        store.activate(db, current)
+        if owned:
+            lifecycle.update(db, identity, state='detached', error='')
+        release(db, identity)
+    return dict(synced=True, files_preserved=True)
 
 
 def available(db, source, identity=None):
@@ -273,6 +362,8 @@ def finish(db, identity, *, manual=False):
     import handoff_lifecycle as lifecycle
     item = lifecycle.get(db, identity)
     report = jobs.read(identity)
+    if report['state'] == 'cancelled' and report.get('sync_state') == 'not-needed':
+        raise ValueError('启动已取消，会话文件保留；不会自动清理这些文件。')
     if not item and not report.get('version_id'):
         reservation = db.execute('SELECT * FROM conversation_runs WHERE job=?', (identity,)).fetchone()
         if not reservation:
@@ -291,6 +382,9 @@ def finish(db, identity, *, manual=False):
     current = lifecycle.recover_version(db, item, 'temporary') if item else lifecycle.version(db, report['version_id'])
     if not current or not Path(json.loads(current['row_json'])['path']).is_file():
         raise ValueError('最新会话已删除，停止同步；不会恢复已删除的文件。')
+    lease = db.execute('SELECT job FROM conversation_runs WHERE conversation=?', (current['conversation'],)).fetchone()
+    if lease and lease['job'] != identity:
+        raise ValueError('原对话已由另一启动任务接管，旧任务保留文件，停止清理。')
     row = json.loads(current['row_json'])
     from setup_backend import load_sources, source_enabled
     if not source_enabled(row, load_sources()):

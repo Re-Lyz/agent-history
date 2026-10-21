@@ -81,6 +81,8 @@ def describe(item):
         text += '\n续聊采集失败，可重试：' + item.get('sync_error', '')
     elif item.get('sync_state') == 'collected':
         text += '\n' + ('新会话历史采集已完成。' if item.get('kind') == 'new' else '续聊内容已采集。')
+    if item.get('session_detached'):
+        text += '\n原对话已切出并同步；终端可继续其他对话，此状态不代表终端进程退出。'
     if item.get('handoff_state') == 'cleaned':
         text += ('\n已保存最新主会话并清理已接替的旧文件。' if item.get('single_head') else
                  '\n已同步到 ' + item.get('durable_source', '') + '，临时副本已回收。')
@@ -165,6 +167,33 @@ def process_matches(item, field='pid'):
 
 class LaunchRejected(ValueError):
     """A replay must not mutate the report belonging to an existing attempt."""
+
+
+def cancel_prepared(identity):
+    """Revoke an unclaimed launch atomically; late runners must fail check_claim."""
+    with ah.file_lock(path(identity).with_suffix('.lock'), wait=True) as locked:
+        if not locked:
+            raise TimeoutError('Launch report is busy.')
+        item = _read(identity)
+        if item['state'] != 'prepared' or item.get('attempts', 0) != 0:
+            raise ValueError('终端已接管或任务已结束，不能取消未接管启动。')
+        item.update(state='cancelled', sync_state='not-needed', sync_error='', updated=now(),
+                    error='用户取消了尚未接管的启动；原生会话和已有内容保留。')
+        atomic_json(path(identity), item)
+        return item
+
+
+def detach_session(identity):
+    """A native session can close while the same terminal continues another chat."""
+    with ah.file_lock(path(identity).with_suffix('.lock'), wait=True) as locked:
+        if not locked:
+            raise TimeoutError('Launch report is busy.')
+        item = _read(identity)
+        if item['state'] != 'running':
+            raise ValueError('终端状态已变化，请刷新后重试同步。')
+        item.update(session_detached=True, sync_state='collected', sync_error='', updated=now())
+        atomic_json(path(identity), item)
+        return item
 
 
 def check_claim(item):

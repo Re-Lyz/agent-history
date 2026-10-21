@@ -110,6 +110,93 @@ class SingleConversationTests(Fixture):
         self.finish(prepared)
         self.prepare(current, 'a')
 
+    def test_cancel_unclaimed_launch_preserves_all_files_and_rejects_late_runner(self):
+        prepared, current = self.prepare()
+        files = {path: path.read_bytes() for path in (self.path, Path(current['path']))}
+        result = single.cancel_prepared(self.db, prepared['job'])
+        self.assertTrue(result['files_preserved'])
+        self.assertEqual(jobs.read(prepared['job'])['state'], 'cancelled')
+        self.assertIsNone(self.db.execute('SELECT 1 FROM conversation_runs').fetchone())
+        self.assertEqual(lifecycle.retry_pending(self.db, manual=True), dict(completed=0, pending=0))
+        with patch.object(runner.subprocess, 'run') as execute:
+            self.assertEqual(runner.run(prepared['job'], ['fixture']), 1)
+        execute.assert_not_called()
+        self.assertTrue(all(path.read_bytes() == data for path, data in files.items()))
+        with self.assertRaisesRegex(ValueError, '已取消'):
+            single.finish(self.db, prepared['job'], manual=True)
+
+    def test_native_busy_prepared_launch_is_reported_accurately_and_cannot_be_cancelled(self):
+        prepared, current = self.prepare()
+        member = store.lookup(self.db, current)
+        with ci.writer_lock(self.b, current['id']) as locked:
+            self.assertTrue(locked)
+            self.assertIn('原生会话正在 Agent 中使用', single.reservation_reason(self.db, member))
+            with self.assertRaisesRegex(ValueError, '仍在 Agent 中使用'):
+                single.cancel_prepared(self.db, prepared['job'])
+        self.assertEqual(jobs.read(prepared['job'])['state'], 'prepared')
+        self.assertIsNotNone(self.db.execute('SELECT 1 FROM conversation_runs').fetchone())
+
+    def test_cancel_commit_before_sql_release_recovers_without_cleaning_native_files(self):
+        prepared, current = self.prepare()
+        jobs.cancel_prepared(prepared['job'])
+        result = lifecycle.retry_pending(self.db, manual=True, identity=prepared['job'])
+        self.assertEqual(result, dict(completed=0, pending=0))
+        self.assertIsNone(self.db.execute('SELECT 1 FROM conversation_runs').fetchone())
+        self.assertTrue(self.path.exists() and Path(current['path']).exists())
+
+    def test_resume_switch_releases_only_idle_observed_session_and_keeps_terminal_running(self):
+        prepared, current = self.prepare()
+        jobs.update(prepared['job'], state='running', pid=os.getpid(), attempts=1)
+        with ci.writer_lock(self.b, current['id']) as locked:
+            self.assertTrue(locked)
+            self.assertTrue(runner.observe_native_session(prepared['job'], current, self.b))
+            with self.assertRaisesRegex(ValueError, '原生写锁'):
+                single.detach_session(self.db, prepared['job'])
+        self.add(current, '原生切换前已保存的内容')
+        result = single.detach_session(self.db, prepared['job'])
+        report = jobs.read(prepared['job'])
+        self.assertEqual(report['state'], 'running')
+        self.assertTrue(report['session_detached'])
+        self.assertNotIn('exit_code', report)
+        self.assertTrue(result['files_preserved'])
+        self.assertIsNone(self.db.execute('SELECT 1 FROM conversation_runs').fetchone())
+        self.assertIn('原生切换前已保存的内容', self.text(current))
+        self.assertTrue(self.path.exists() and Path(current['path']).exists())
+        newer, next_row = self.prepare(current, 'b')
+        jobs.update(prepared['job'], state='exited', exit_code=0)
+        with self.assertRaisesRegex(ValueError, '另一启动任务'):
+            single.finish(self.db, prepared['job'])
+        self.assertEqual(jobs.read(newer['job'])['state'], 'prepared')
+        self.assertTrue(Path(next_row['path']).exists())
+
+    def test_startup_gap_and_old_reports_are_not_mistaken_for_native_resume_switch(self):
+        prepared, _ = self.prepare()
+        jobs.update(prepared['job'], state='running', pid=os.getpid(), attempts=1)
+        with self.assertRaisesRegex(ValueError, '尚未记录原生会话接管'):
+            single.detach_session(self.db, prepared['job'])
+        with self.assertRaisesRegex(ValueError, '终端已接管'):
+            single.cancel_prepared(self.db, prepared['job'])
+        self.assertEqual(jobs.read(prepared['job'])['state'], 'running')
+
+    def test_connection_aliases_do_not_make_an_idle_native_session_lock_itself(self):
+        prepared, current = self.prepare(target='a')
+        member = dict(store.lookup(self.db, current))
+        alias = dict(member, row_json=json.dumps(dict(current, source='old')))
+        with patch.object(single, 'versions', return_value=[member, alias]):
+            single.cancel_prepared(self.db, prepared['job'])
+        self.assertEqual(jobs.read(prepared['job'])['state'], 'cancelled')
+        self.assertTrue(Path(current['path']).exists())
+
+    def test_finished_job_report_repair_does_not_release_a_new_reservation(self):
+        prepared, current = self.prepare()
+        self.finish(prepared)
+        newer, _ = self.prepare(current, 'b')
+        jobs.update(prepared['job'], sync_state='failed', sync_error='synthetic interrupted report')
+        single.finish(self.db, prepared['job'], manual=True)
+        self.assertEqual(jobs.read(prepared['job'])['sync_state'], 'collected')
+        self.assertEqual(self.db.execute('SELECT job FROM conversation_runs').fetchone()[0], newer['job'])
+        self.assertTrue(Path(current['path']).exists())
+
     def test_native_writer_lock_prevents_switch_before_creating_a_target(self):
         with ci.writer_lock(self.a, 's1') as locked:
             self.assertTrue(locked)

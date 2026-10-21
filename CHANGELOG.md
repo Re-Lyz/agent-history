@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Unified read-only diagnostics, redacted export, immutable app-configuration backups, verified restore and reviewed installation update / uninstall actions.
+- Native-session-aware launch status, cancellation of unclaimed idle launches, and explicit sync of observed sessions switched away from a still-running Codex terminal. Late runners and old cleanup cannot replace a newer reservation.
+- Extract installation, terminal adapters, history queries and reader widgets into history_app while preserving existing root imports and command entry points.
+
 - Single-current-conversation handoffs: reserve one managed writer, promote the used native target without a return copy, and retire covered old transcripts / resume entries through recoverable cleanup journals. Existing jobs retain their legacy policy.
 - Explicit conversation consolidation with database backups, full branch text, native resume verification and reversible folding of included versions.
 - Lazy tool-detail widgets, incremental rendering for all conversations, reuse of unchanged previews and coalesced launch-plan refreshes.

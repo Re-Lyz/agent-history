@@ -397,6 +397,11 @@ def retry_pending(db, *, manual=False, allow_branch=False, identity=None):
             if manual:
                 jobs.reconcile(identity=key)
             report = jobs.read(key)
+            if report['state'] == 'cancelled' and report.get('sync_state') == 'not-needed':
+                update(db, key, state='cancelled', error='')
+                import single_conversation
+                single_conversation.release(db, key)
+                continue
             if report['state'] in ('prepared', 'running'):
                 result['pending'] += 1
                 continue

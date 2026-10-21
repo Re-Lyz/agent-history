@@ -7,6 +7,7 @@ import argparse
 import contextlib
 import json
 from pathlib import Path
+import sys
 import time
 
 import agent_history as ah
@@ -51,6 +52,9 @@ def compact(db, *, apply=False, now=None):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] in ('diagnose', 'backup', 'backups', 'restore-config', 'upgrade', 'uninstall'):
+        from history_app.cli import main as application_maintenance
+        return application_maintenance(sys.argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--apply', action='store_true', help='Apply the previewed maintenance.')
     parser.add_argument('--data-dir', type=Path, help='Override the local runtime data directory.')

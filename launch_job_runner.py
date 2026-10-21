@@ -5,10 +5,55 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 
 import agent_history as ah
 import launch_jobs as jobs
 import launch_runner
+
+
+def observe_native_session(identity, row, home, expected=None):
+    """Record actual native writer-lock acquisition, not merely a live terminal."""
+    import codex_import
+    lock_path = home / 'thread-writer-locks' / (row['id'] + '.lock')
+    if not lock_path.exists():
+        return False
+    with codex_import.writer_lock(home, row['id']) as free:
+        if free:
+            return False
+    report = jobs.read(identity)
+    jobs.update(identity, expected_state='running',
+                expected_fields=expected or {key: report.get(key) for key in ('pid', 'pid_started', 'attempts')},
+                native_session_observed=True)
+    return True
+
+
+def native_observer(db, identity):
+    """Observe once, without reading content or touching a native database."""
+    report = jobs.read(identity)
+    item = db.execute('SELECT row_json FROM conversation_versions WHERE id=?',
+                      (report.get('version_id'),)).fetchone()
+    if not item:
+        return lambda: None
+    row = json.loads(item['row_json'])
+    home = dict(ah.codex_homes()).get(row['source']) if row['tool'] == 'codex' else None
+    if home is None:
+        return lambda: None
+    stop = threading.Event()
+    expected = {key: report.get(key) for key in ('pid', 'pid_started', 'attempts')}
+    def observe():
+        while not stop.wait(0.2):
+            try:
+                if observe_native_session(identity, row, home, expected):
+                    return
+            except (OSError, ValueError, TimeoutError):
+                return  # Unknown is not permission to release a conversation.
+    thread = threading.Thread(target=observe, daemon=True)
+    thread.start()
+    def finish():
+        stop.set()
+        thread.join(timeout=2)
+    return finish
 
 
 def checked_inner(inner):
@@ -27,6 +72,7 @@ def run(identity, inner):
     code = 1
     claimed = False
     rejected = False
+    stop_observing = lambda: None
     try:
         import single_conversation
         with ah.collect_lock(wait=True) as locked:
@@ -38,6 +84,7 @@ def run(identity, inner):
                 single_conversation.claim(db, identity)
                 jobs.claim(identity)
                 claimed = True
+                stop_observing = native_observer(db, identity)
         argv = ['powershell.exe', '-NoLogo', '-ExecutionPolicy', 'Bypass', *checked_inner(inner)] if os.name == 'nt' else inner
         result = subprocess.run(argv, shell=False)
         code = result.returncode
@@ -53,6 +100,7 @@ def run(identity, inner):
         jobs.update(identity, state='failed', exit_code=None,
                     error=str(error) if isinstance(error, ValueError) else type(error).__name__ + ': 无法启动终端命令。')
     finally:
+        stop_observing()
         if not claimed:
             if not rejected and jobs.read(identity)['state'] != 'running':
                 jobs.update(identity, sync_state='failed', sync_error='启动未获得独占权；请查看最新主对话和启动记录。')

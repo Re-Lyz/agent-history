@@ -1,5 +1,9 @@
 # 测试与原生兼容验证
 
+维护和模块边界：`test_app_maintenance.py` 验证只读／脱敏诊断、损坏和过期备份、恢复失败回退、活跃任务阻止、保留历史／认证／删除记录、安装失败后的登记撤销、保持集成及自定义数据位置，以及不同目录和无 Tk 后端导入。维护窗口验证真实表单、脱敏剪贴板、配置恢复及关闭时不覆盖已恢复偏好。
+
+原生切出兼容：`python tests/verify_resume_switch.py` 使用真实 Codex app-server 验证写锁接管记录、使用中拒绝释放、空闲后同步、终端状态仍为 running、文件保留及迟到清理保护；零模型请求，不代表交互式 TUI 的 `/resume` 已验收。该脚本纳入双平台 Actions 原生检查。单元和界面验证取消未接管启动、迟到 runner 拒绝执行、未知接管记录保守保护及当前选择的任务范围。
+
 UI 长对话测试主动触发分批渲染，等待渲染及窗口布局完成后核对正文和阅读位置。恢复操作允许云端磁盘耗时；测试退出时先等待后台线程释放临时目录中的锁。
 
 beta 发行检查：`release_audit.py` 检查当前源码／完整可达 Git 历史／可选 ZIP，报告只含分类和位置；`test_release_audit.py` 用临时 Git 验证已删除秘密也能检出。`first_use_check.py 源码包.zip` 从解压源码用临时用户执行安装、首次配置、真实 Markdown 阅读、可选集成、源码移动升级、卸载和保留数据，不访问个人 home。先在独立 venv 安装 requirements-ui.txt；Linux 无桌面用 xvfb-run。`beta_linux_run.py` 是可选本地 Linux helper，需要已准备的验证 CLI／终端缓存，不是产品安装依赖。完整说明见 [beta 记录](../docs/beta-release.md)。

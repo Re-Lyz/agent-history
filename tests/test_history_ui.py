@@ -560,6 +560,72 @@ class ViewerInteractionTests(unittest.TestCase):
         with patch.object(md, 'available', return_value=False):
             self.exercise(interact)
 
+    def test_maintenance_window_exports_redacted_report_and_restores_preferences_without_overwriting(self):
+        from history_app.ui import maintenance
+        windows = []
+        original = maintenance.MaintenanceWindow
+        def create(*args, **kwargs):
+            window = original(*args, **kwargs)
+            windows.append(window)
+            return window
+        def interact(root):
+            root.deiconify()
+            tree = next(w for w in self.widgets() if isinstance(w, self.ttk.Treeview) and 'check' in w.cget('columns'))
+            self.wait(lambda: len(tree.get_children()) == 2)
+            self.button('诊断与维护').invoke()
+            self.wait(lambda: windows and not windows[0].running)
+            dialog = windows[0]
+            dialog.prefix.set(str(self.path / 'synthetic-install'))
+            self.button('诊断与维护').invoke()
+            self.assertEqual(len(windows), 1)
+            dialog.diagnose()
+            self.wait(lambda: dialog.report is not None and not dialog.running)
+            self.assertEqual(json.loads(dialog.outputs['health'].get('1.0', 'end'))['local_paths']['shared'], str(self.shared))
+            dialog.copy_report()
+            exported = json.loads(root.clipboard_get())
+            self.assertNotIn('local_paths', exported)
+            self.assertNotIn(str(self.path), root.clipboard_get())
+            dialog.backup()
+            self.wait(lambda: not dialog.running and bool(dialog.backup_picker['values']))
+            preferences = self.data / 'ui-preferences.json'
+            preferences.write_text(json.dumps(dict(version=1, default_target='b')), encoding='utf-8')
+            dialog.preview_restore()
+            self.wait(lambda: not dialog.running and dialog.plan is not None)
+            self.assertFalse(dialog.restore_button.instate(['disabled']))
+            dialog.restore()
+            self.wait(lambda: not dialog.running and dialog.plan is None)
+            self.assertFalse(preferences.exists())
+            dialog.running = True
+            dialog.close()
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+            self.assertTrue(root.winfo_exists())
+            dialog.running = False
+            dialog.close()
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        with patch.object(maintenance, 'MaintenanceWindow', side_effect=create):
+            self.exercise(interact)
+        self.assertFalse((self.data / 'ui-preferences.json').exists())
+
+    def test_unclaimed_launch_can_be_cancelled_from_selected_conversation_without_running_agent(self):
+        prepared_jobs = []
+        def interact(root):
+            root.deiconify()
+            tree = next(w for w in self.widgets() if isinstance(w, self.ttk.Treeview) and 'check' in w.cget('columns'))
+            self.wait(lambda: len(tree.get_children()) == 2)
+            iid = next(item for item in tree.get_children() if 'two.jsonl' in item)
+            tree.selection_set(iid)
+            root.update()
+            with contextlib.closing(ah.connect()) as db:
+                prepared = ui.launcher.prepare_launch(db, dict(ah.resolve(db, 'two')), 'a', str(self.path))
+                prepared_jobs.append(prepared['job'])
+            self.button('取消未接管启动').invoke()
+            self.wait(lambda: ui.launch_jobs.read(prepared['job'])['state'] == 'cancelled')
+            self.assertTrue((self.path / 'a/sessions/two.jsonl').is_file())
+            self.wait(lambda: any('已取消未接管启动' in text for text in self.statuses()))
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        self.exercise(interact)
+        self.assertEqual(ui.launch_jobs.read(prepared_jobs[0])['state'], 'cancelled')
+
     @unittest.skipUnless(md.available(), 'Install requirements-ui.txt for Markdown UI verification.')
     def test_clean_titles_local_links_compact_paragraphs_and_tool_rows(self):
         import conversation_store

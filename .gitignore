@@ -43,6 +43,8 @@
 !tool_panel.py
 !terminal_platform.py
 !install.py
+!history_app/
+!history_app/**
 !tests/
 !tests/**
 !integrations/

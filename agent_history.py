@@ -84,30 +84,7 @@ def connect():
     return db
 
 
-@contextlib.contextmanager
-def file_lock(path, wait):
-    """Process-scoped lock; the OS releases it if the collector dies."""
-    DATA.mkdir(parents=True, exist_ok=True)
-    handle = open(path, 'a+')
-    try:
-        if os.name == 'nt':
-            import msvcrt
-            handle.seek(0)
-            try:
-                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK if wait else msvcrt.LK_NBLCK, 1)
-            except OSError:
-                yield False
-                return
-        else:
-            import fcntl
-            try:
-                fcntl.flock(handle, fcntl.LOCK_EX | (0 if wait else fcntl.LOCK_NB))
-            except OSError:
-                yield False
-                return
-        yield True
-    finally:
-        handle.close()
+from history_app.locks import file_lock
 
 
 def collect_lock(wait):

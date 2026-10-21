@@ -13,6 +13,8 @@ python launch_profiles.py list
 
 先检查预览和目标 home，再执行导入。程序的 `resume --all` 可以列出其他工作目录的记录；仍遵循原生 CLI 的筛选与版本行为。
 
+环境诊断和配置维护使用 `python maintenance.py diagnose`、`backup`、`backups`、`restore-config`、`upgrade` 和 `uninstall`。恢复／更新／卸载默认仅预览，显式 `--apply` 才执行；旧的修订存储维护入口保持兼容。详见 [维护说明](docs/maintenance.md)。
+
 ## 已有 Windows 快捷入口
 
 旧版个人包装脚本可能定义 `codex1`、`codex2`、`codexc`、`codexh` 或 `codexui`。这些是用户自己配置的函数／脚本，不是基础安装的必备命令，不保证克隆本项目后就存在；名称、连接映射和登录位置可自行配置。现有脚本可调用仓库的 `launch.ps1`，其参数见脚本的 `-Help`。

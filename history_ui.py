@@ -43,95 +43,12 @@ from tool_panel import ToolPanel
 from ui_widgets import SelectableText
 
 
-def review_candidates():
-    """Only current candidates from the latest complete audit."""
-    return support.review_snapshot()['candidates']
-
-
-@connections.snapshot()
-def list_rows(db, source='', query='', include_imports=False, include_internal=False, only=None, limit=500,
-              project=None, sort_by='time', descending=True):
-    """Filter all transcript versions and sort before applying a page limit."""
-    kinds = {'main'} | ({'import'} if include_imports else set()) | \
-        ({'guardian', 'subagent'} if include_internal else set())
-    rows, seen = [], set()
-    import setup_backend
-    scope = setup_backend.load_sources()
-    for raw in db.execute('''SELECT s.*, f.source AS file_source, f.path AS file_path, f.mtime AS modified
-                             FROM files f JOIN sessions s ON s.key=f.session_key ORDER BY f.mtime DESC'''):
-        r = dict(raw)
-        r['indexed_path'] = r['path']
-        r['source'], r['path'] = r.pop('file_source'), r.pop('file_path')
-        if source and r['source'] != source:
-            continue
-        if only is not None and str(Path(r['path'])) not in only:
-            continue
-        if scope is not None and (r['source'] not in scope['codex'] if r['tool'] == 'codex' else
-                                 str(Path(r['path']).parent.parent.parent) not in scope['claude']):
-            continue
-        if (r['source'], r['path']) in seen:
-            continue
-        seen.add((r['source'], r['path']))
-        matched = False
-        with contextlib.suppress(ValueError, OSError):
-            r, matched = ah.physical_view(db, r, query)
-        r = titles.apply(db, r)
-        if only is None and r['kind'] not in kinds and not (r['kind'] == 'import' and conversations.lookup(db, r)):
-            continue
-        if project is not None and support.project_key(r['cwd']) != support.project_key(project):
-            continue
-        if query:
-            text = ' '.join(str(r[k] or '') for k in ('title', 'cwd', 'id')).casefold()
-            if query.casefold() not in text:
-                if matched:
-                    rows.append(r)
-                continue
-        rows.append(r)
-    rows = support.sort_history(rows, sort_by, descending)
-    return rows if limit is None else rows[:limit]
+from history_app.history_queries import review_candidates, list_rows, recovery_job, render_messages
+from history_app import history_queries
 
 
 def project_choices(db):
-    """Include every indexed project, including missing directories and hidden session kinds."""
-    projects = {}
-    for row in list_rows(db, include_imports=True, include_internal=True, limit=None):
-        projects.setdefault(support.project_key(row['cwd']), row['cwd'] or '')
-    return {'全部项目': None, **{cwd or '未记录目录': cwd for cwd in sorted(projects.values(), key=str.casefold)}}
-
-
-def recovery_job(db, selected, fallback=None):
-    """A selected conversation must never retry another conversation's job."""
-    if not selected:
-        return fallback
-    member = conversations.lookup(db, selected)
-    if not member:
-        return None
-    reservation = db.execute('SELECT job FROM conversation_runs WHERE conversation=?',
-                             (member['conversation'],)).fetchone()
-    if reservation:
-        return reservation['job']
-    owner = db.execute("SELECT id FROM temporary_handoffs WHERE temporary_version=? OR durable_version=? "
-                       "ORDER BY (state='cleaned'), rowid DESC LIMIT 1",
-                       (member['id'], member['id'])).fetchone()
-    return owner['id'] if owner else None
-
-
-def render_messages(rows, limit=MESSAGE_LIMIT):
-    """Plain text for the viewer: tool traffic folded to one line each."""
-    out = []
-    shown = rows[-limit:] if limit is not None else rows
-    if len(rows) > len(shown):
-        out.append(('note', f'（仅显示最近 {limit} 条，共 {len(rows)} 条；可加载更早消息）\n\n'))
-    for r in shown:
-        role, text = r['role'], r['text'] or ''
-        if role in ('tool_call', 'tool_output'):
-            line = ' '.join(text.split())[:160]
-            out.append(('tool', f'  ▸ {role}: {line}\n'))
-            continue
-        stamp = (r['ts'] or '')[:16].replace('T', ' ')
-        out.append(('head_' + ('user' if role == 'user' else 'other'), f'\n{role.upper()}  {stamp}\n'))
-        out.append(('body', text.rstrip() + '\n'))
-    return out
+    return history_queries.project_choices(db, list_fn=list_rows)
 
 
 # ---------------------------------------------------------------- UI
@@ -318,18 +235,24 @@ def run_ui():
                 self.normal_geometry = self.root.geometry()
 
         def close(self):
+            maintenance_window = getattr(self, 'maintenance_window', None)
+            if maintenance_window and maintenance_window.window.winfo_exists() and maintenance_window.running:
+                maintenance_window.window.lift()
+                self.busy.set('维护任务尚在运行，请等待完成后关闭。')
+                return
             try:
-                self.preferences.update(geometry=self.normal_geometry, maximized=self.root.state() == 'zoomed',
-                                        sort=dict(column=self.sort_column, descending=self.sort_descending),
-                                        preview_mode='markdown' if self.preview_mode.get() == 'Markdown' else 'raw',
-                                        filters=dict(query=self.search_text(), source=self.source.get(),
-                                                     project=self.project.get(),
-                                                     imports=self.show_imports.get(), internal=self.show_internal.get(),
-                                                     review=self.only_review.get()))
-                width = self.pane.winfo_width()
-                if width > 1:
-                    self.preferences['panes'] = [self.pane.sashpos(i) / width for i in (0, 1)]
-                support.save_preferences(self.preferences)
+                if not getattr(self, 'preserve_restored_preferences', False):
+                    self.preferences.update(geometry=self.normal_geometry, maximized=self.root.state() == 'zoomed',
+                                            sort=dict(column=self.sort_column, descending=self.sort_descending),
+                                            preview_mode='markdown' if self.preview_mode.get() == 'Markdown' else 'raw',
+                                            filters=dict(query=self.search_text(), source=self.source.get(),
+                                                         project=self.project.get(),
+                                                         imports=self.show_imports.get(), internal=self.show_internal.get(),
+                                                         review=self.only_review.get()))
+                    width = self.pane.winfo_width()
+                    if width > 1:
+                        self.preferences['panes'] = [self.pane.sashpos(i) / width for i in (0, 1)]
+                    support.save_preferences(self.preferences)
             except Exception as error:
                 # A preference failure must not block exit with a modal dialog.
                 support.log_error('Saving viewer preferences on close', error)
@@ -387,6 +310,7 @@ def run_ui():
             self.audit_button.pack(side='right')
             ttk.Button(audit_bar, text='启动配置', command=self.manage_profiles).pack(side='right', padx=8)
             ttk.Button(audit_bar, text='配置历史来源', command=self.setup_sources).pack(side='right')
+            ttk.Button(audit_bar, text='诊断与维护', command=self.open_maintenance).pack(side='right', padx=8)
             ttk.Button(audit_bar, text='新增对话', style='Accent.TButton',
                        command=self.new_conversation).pack(side='right', padx=8)
 
@@ -606,6 +530,8 @@ def run_ui():
             ttk.Button(inner, text='测试启动（不调用模型）', command=self.test_launch).pack(fill='x', pady=(6, 0))
             ttk.Button(inner, text='重试启动', command=self.launch).pack(fill='x', pady=(6, 0))
             ttk.Button(inner, text='重试同步／刷新续聊', command=self.retry_handoff).pack(fill='x', pady=(6, 0))
+            ttk.Button(inner, text='取消未接管启动', command=self.cancel_unclaimed_launch).pack(fill='x', pady=(6, 0))
+            ttk.Button(inner, text='同步已切出的原对话', command=self.sync_switched_session).pack(fill='x', pady=(6, 0))
             ttk.Button(inner, text='保留分支并完成同步', command=lambda: self.retry_handoff(allow_branch=True)).pack(fill='x', pady=(6, 0))
             ttk.Button(inner, text='启动记录', command=self.show_launch_reports).pack(fill='x', pady=(6, 0))
             ttk.Button(inner, text='查看错误日志', style='Soft.TButton', command=self.open_log).pack(fill='x', pady=(6, 0))
@@ -870,6 +796,19 @@ def run_ui():
         def setup_sources(self):
             settings_ui.SetupWizard(self.root, self.settings_changed)
 
+        def open_maintenance(self):
+            from history_app.ui.maintenance import MaintenanceWindow
+            current = getattr(self, 'maintenance_window', None)
+            if current and current.window.winfo_exists():
+                current.window.lift()
+                return
+            self.maintenance_window = MaintenanceWindow(self.root, self.background, self.configuration_restored)
+
+        def configuration_restored(self):
+            self.preserve_restored_preferences = True
+            self.preferences = support.load_preferences()
+            self.settings_changed()
+
         def settings_changed(self):
             import launch_profiles
             configured, _ = launch_profiles.load()
@@ -1007,6 +946,41 @@ def run_ui():
                 self.launch_status.set(message)
                 self.busy.set(message)
             self.background(work, done, label='正在保存主对话并清理已接替的旧文件…', key='handoff-sync')
+
+        def cancel_unclaimed_launch(self):
+            rows = self.selected()
+            if len(rows) != 1:
+                return self.show_error('无法取消启动', ValueError('请先选择对应的对话。'))
+            selected = rows[0]
+            def work():
+                import single_conversation
+                with trash.locked_db(reindex=False) as db:
+                    identity = recovery_job(db, selected)
+                    if not identity:
+                        raise ValueError('所选对话没有待接管的启动预约。')
+                    single_conversation.cancel_prepared(db, identity)
+                return identity
+            def done(identity):
+                self.refresh()
+                self.notice('已取消未接管启动；会话文件保留，迟到的旧启动不会再次执行。')
+            self.background(work, done, label='正在核对原生会话并取消未接管启动…', key='cancel-launch')
+
+        def sync_switched_session(self):
+            rows = self.selected()
+            if len(rows) != 1:
+                return self.show_error('无法同步切出对话', ValueError('请先选择原来那条对话。'))
+            selected = rows[0]
+            def work():
+                import single_conversation
+                with trash.locked_db(reindex=False) as db:
+                    identity = recovery_job(db, selected)
+                    if not identity:
+                        raise ValueError('所选对话没有对应的运行任务。')
+                    return single_conversation.detach_session(db, identity)
+            def done(result):
+                self.refresh()
+                self.notice('已同步切出的原对话并释放预约；终端继续运行，会话文件全部保留。')
+            self.background(work, done, label='正在核对原生写锁并同步切出对话…', key='detach-session')
 
         # -------- history list and batch selection
         def sort_list(self, column):
