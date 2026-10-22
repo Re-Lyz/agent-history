@@ -59,7 +59,8 @@ jobs:
       - if: runner.os == 'Windows'
         run: python -c "import subprocess,sys; [subprocess.run([sys.executable,'tests/'+name+'.py'],check=True) for name in ('verify_ui_resume','verify_claude_to_codex','verify_handoff','verify_temporary_handoff','verify_single_conversation','verify_resume_switch')]"
       - if: runner.os == 'Windows'
-        run: python -m pip install --only-binary=:all: pywinpty
+        run: |
+          python -m pip install --only-binary=:all: pywinpty
       - if: runner.os == 'Linux'
         run: python -m pip install pexpect
       - run: npm install -g @openai/codex@0.162.1
