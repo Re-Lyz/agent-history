@@ -64,7 +64,7 @@ class Terminal:
     def command(self, text):
         offset = len(self.output)
         self.write(text)
-        self.wait(lambda: text in self.output[offset:])
+        self.wait(lambda: text in re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]', '', self.output[offset:]))
         self.write('\r')
 
     def wait(self, predicate, timeout=30):
