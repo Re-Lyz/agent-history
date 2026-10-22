@@ -2,6 +2,10 @@
 
 `test_module_boundaries.py` 在新进程中验证根入口与包模块的导入身份、无 Tk 后端、中文自定义目录和独立 runner 的真实非零退出码。可执行入口从源码根目录定位，不从实现模块的 `__file__` 推断。
 
+`systemd_check.py` 仅用于有真实用户级 systemd 管理器的临时 Linux 测试用户，要求显式设置 `AGENT_HISTORY_DISPOSABLE_USER=1`。它验证实际定时触发、服务失败及重试、重复安装和卸载保留数据；CI 自动创建该用户，不应在日常用户下运行。
+
+`verify_tui_resume.py` 使用真实终端、临时会话、独立配置和拒绝模型请求的本机 provider，验证空闲时 `/resume <会话 ID>` 切换、终端保持运行、正常 `/quit` 后释放写锁及原消息保留。Windows 需要 pywinpty，Linux 需要 pexpect；双平台 CI 使用 Codex 0.162.1。它记录切换后旧锁是否仍被持有，不强行释放；不涵盖选择器、真实登录、模型回合或后台任务。
+
 维护和模块边界：`test_app_maintenance.py` 验证只读／脱敏诊断、损坏和过期备份、恢复失败回退、活跃任务阻止、保留历史／认证／删除记录、安装失败后的登记撤销、保持集成及自定义数据位置，以及不同目录和无 Tk 后端导入。维护窗口验证真实表单、脱敏剪贴板、配置恢复及关闭时不覆盖已恢复偏好。
 
 原生切出兼容：`python tests/verify_resume_switch.py` 使用真实 Codex app-server 验证写锁接管记录、使用中拒绝释放、空闲后同步、终端状态仍为 running、文件保留及迟到清理保护；零模型请求，不代表交互式 TUI 的 `/resume` 已验收。该脚本纳入双平台 Actions 原生检查。单元和界面验证取消未接管启动、迟到 runner 拒绝执行、未知接管记录保守保护及当前选择的任务范围。
