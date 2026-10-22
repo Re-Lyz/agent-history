@@ -22,6 +22,25 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y xvfb xterm
       - if: runner.os == 'Linux'
         run: xvfb-run -a python tests/linux_check.py
+      - if: runner.os == 'Linux'
+        run: xvfb-run -a python tests/linux_terminal_check.py /usr/bin/xterm
+      - if: runner.os == 'Linux'
+        name: Real systemd timer in disposable user
+        shell: bash
+        run: |
+          set -euo pipefail
+          task_user=agent-history-validation
+          sudo useradd --create-home --shell /bin/bash "$task_user"
+          task_uid=$(id -u "$task_user")
+          sudo loginctl enable-linger "$task_user"
+          sudo systemctl start "user@${task_uid}.service"
+          task_root=/home/$task_user/source
+          sudo mkdir "$task_root"
+          sudo cp -a . "$task_root/"
+          sudo chown -R "$task_user:$task_user" "$task_root"
+          sudo -u "$task_user" env HOME="/home/$task_user" XDG_RUNTIME_DIR="/run/user/$task_uid" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$task_uid/bus" AGENT_HISTORY_DISPOSABLE_USER=1 \
+            "$(command -v python)" "$task_root/tests/systemd_check.py"
       - if: runner.os == 'Windows'
         run: python -m unittest discover -s tests -t . -q
       - run: python tests/release_audit.py --output dist/content-audit.json

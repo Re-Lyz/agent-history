@@ -73,7 +73,7 @@ def verify():
                     script.write_text('exit 0\n')
                     inner = ['-File', str(script)] if os.name == 'nt' else ['/bin/sh', str(script)]
                     payload = base64.b64encode(json.dumps(dict(job=prepared['job'], inner=inner)).encode()).decode()
-                    result = subprocess.run([sys.executable, str(Path(runner.__file__)), payload],
+                    result = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / 'launch_job_runner.py'), payload],
                         env={**os.environ, **prepared['env'], 'USERPROFILE': str(root), 'HOME': str(root)},
                         capture_output=True, timeout=90)
                     assert result.returncode == 0, result.stderr

@@ -57,7 +57,7 @@ with tempfile.TemporaryDirectory(prefix='agent-history-linux-') as temporary:
     (ah.DATA/'sources.json').write_text(json.dumps(dict(version=1,codex=[],claude=[])))
     headless={**os.environ, 'DISPLAY':'', 'WAYLAND_DISPLAY':'', 'AGENT_HISTORY_HOME':str(ah.DATA),
               'AGENT_HISTORY_SHARED_ROOT':str(shared)}
-    command=[sys.executable,str(Path(ah.__file__)),'--data-dir',str(ah.DATA)]
+    command=[sys.executable,str(Path(__file__).resolve().parents[1] / 'agent_history.py'),'--data-dir',str(ah.DATA)]
     for operation in (['collect'],['sessions'],['search','synthetic-no-match']):
         completed=subprocess.run(command+operation,env=headless,capture_output=True,text=True,timeout=20)
         assert completed.returncode==0,completed.stderr

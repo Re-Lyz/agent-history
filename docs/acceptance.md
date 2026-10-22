@@ -10,7 +10,11 @@
 | 配置损坏、恢复失败回退、预览过期、活跃任务阻止 | test_app_maintenance.py | 不操作个人配置或原生数据库 |
 | 安装中途失败后的登记撤销，保留其他集成 | test_app_maintenance.py | 系统任务失败保留可重试日志 |
 | 未接管取消、原生切出、迟到任务保护 | test_single_conversation.py、test_history_ui.py | 写锁场景不能代替真实 TUI 的 /resume 全流程 |
-| 不同工作目录、无 Tk 后端、旧模块入口 | test_app_maintenance.py、完整回归 | 重构后继续检查便携包和独立 runner |
+| 不同工作目录、无 Tk 后端、旧模块入口 | test_module_boundaries.py、test_app_maintenance.py、完整回归 | 保留旧入口、非零退出码与导入身份；检查便携包和独立 runner |
+
+## 本机验证记录
+
+2026-10-22：Windows / Python 3.12 完整回归 249 项（1 项 Linux 专用检查跳过），六项 Codex 0.162.1 原生检查通过，零模型请求。模块拆分后的便携包与临时用户安装／升级／卸载演练通过。前一版公开提交的 Windows / Ubuntu CI 已通过；本次拆分的新代码尚需 Linux 复验。当前本机 WSL 只有 Python 3.8.10 且缺少 Tk，不满足 Python 3.11+ 的要求。
 
 ## 仍未验收的真实环境
 

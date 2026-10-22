@@ -37,7 +37,7 @@ class LaunchJobTests(Fixture):
         prepared = backend.prepare_new('profile:writer', self.cwd)
         payload = base64.b64encode(json.dumps(dict(job=prepared['job'], inner=prepared['inner'])).encode()).decode()
         environment = {**os.environ, **prepared['env'], 'HOME': str(self.root), 'USERPROFILE': str(self.root)}
-        result = subprocess.run([sys.executable, str(Path(runner.__file__)), payload], env=environment,
+        result = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / 'launch_job_runner.py'), payload], env=environment,
             capture_output=True, timeout=25, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         self.assertEqual(result.returncode, 0, result.stderr)
         report = jobs.read(prepared['job'])
@@ -87,7 +87,7 @@ with patch.object(tkinter, 'Tk', side_effect=tkinter.TclError('synthetic startup
     runpy.run_path(sys.argv[1], run_name='__main__')
 ''', encoding='utf-8')
         env = {**os.environ, 'AGENT_HISTORY_HOME': str(ah.DATA), 'AGENT_HISTORY_SHARED_ROOT': str(ah.ROOT)}
-        ui = Path(backend.__file__).with_name('history_ui.py')
+        ui = Path(__file__).resolve().parents[1] / 'history_ui.py'
         result = subprocess.run([str(pythonw), str(script), str(ui), str(dialog)], env=env,
                                 creationflags=subprocess.CREATE_NO_WINDOW, timeout=15)
         self.assertNotEqual(result.returncode, 0)
@@ -123,7 +123,7 @@ with patch.object(tkinter, 'Tk', side_effect=tkinter.TclError('synthetic startup
         import base64
         payload = base64.b64encode(json.dumps(dict(job=prepared['job'], inner=command)).encode()).decode()
         env = {**os.environ, **prepared['env']}
-        result = subprocess.run([sys.executable, str(Path(runner.__file__)), payload], env=env, capture_output=True)
+        result = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1] / 'launch_job_runner.py'), payload], env=env, capture_output=True)
         self.assertEqual(result.returncode, 17, result.stderr)
         self.assertEqual(jobs.read(prepared['job'])['exit_code'], 17)
         self.assertEqual(jobs.read(prepared['job'])['sync_state'], 'collected')

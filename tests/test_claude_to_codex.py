@@ -193,7 +193,7 @@ class ClaudeToCodexTests(Fixture):
                'AGENT_HISTORY_SHARED_ROOT': str(ah.ROOT), 'PYTHONIOENCODING': 'utf-8'}
         if os.name != 'nt':
             env['HOME'] = str(self.root)
-        command = [sys.executable, str(Path(ah.__file__)), 'import-codex', 'claude-one', '--source', 'claude', '--to', 'b']
+        command = [sys.executable, str(Path(__file__).resolve().parents[1] / 'agent_history.py'), 'import-codex', 'claude-one', '--source', 'claude', '--to', 'b']
         def call(*extra):
             result = subprocess.run(command + list(extra), env=env, capture_output=True, text=True,
                                     encoding='utf-8', timeout=20)

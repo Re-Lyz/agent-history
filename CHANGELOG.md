@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Split the main viewer into focused controllers and group history storage, native adapters, and launch lifecycle modules; preserve legacy import identity, installed script paths, UTF-8 CLI errors, and runner exit codes.
+
 - Unified read-only diagnostics, redacted export, immutable app-configuration backups, verified restore and reviewed installation update / uninstall actions.
 - Native-session-aware launch status, cancellation of unclaimed idle launches, and explicit sync of observed sessions switched away from a still-running Codex terminal. Late runners and old cleanup cannot replace a newer reservation.
 - Extract installation, terminal adapters, history queries and reader widgets into history_app while preserving existing root imports and command entry points.
