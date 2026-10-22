@@ -20,7 +20,7 @@
 
 本次拆分代码的 [Windows / Ubuntu 22.04 CI](https://github.com/Re-Lyz/agent-history/actions/runs/39719705194) 已通过，公开验收分支为 validation/remaining-todo-20261022，提交 06f0adf。Linux 完整回归 249 项（7 项平台相关检查跳过），并通过实际 xterm 的参数／环境／目录／退出码检查及无桌面 CLI。独立临时 Linux 用户的真实 systemd timer 已验证定时触发、服务失败、重试恢复、重复安装、卸载及数据保留。双平台同时通过便携包、临时用户首次使用及六项 Codex 0.159.2 原生检查。该分支尚未合入 main。
 
-本机 Codex 0.162.1 的真实 TUI 空闲切换已通过：在同一终端输入 `/resume <会话 ID>` 后读出目标历史，终端保持运行，旧会话写锁仍被持有；`/quit` 正常退出后两条会话的锁均释放，原有用户与助手消息完整保留。`verify_tui_resume.py` 使用隔离配置和合成历史，模型请求为零；已加入双平台 CI。不代表已验收选择器操作、登录后的模型回合或后台任务。
+Codex 0.162.1 的真实 TUI 空闲切换已通过本机及 [Windows / Ubuntu CI](https://github.com/Re-Lyz/agent-history/actions/runs/39741047257)（04e243c）：在同一终端输入 `/resume <会话 ID>` 后读出目标历史，终端保持运行，旧会话写锁仍被持有；`/quit` 正常退出后两条会话的锁均释放，原有用户与助手消息完整保留。`verify_tui_resume.py` 使用隔离配置和合成历史，模型请求为零；双平台完整回归、原生兼容、打包与隐私审计同时通过。不代表已验收选择器操作、登录后的模型回合或后台任务。
 
 ## 仍未验收的真实环境
 
