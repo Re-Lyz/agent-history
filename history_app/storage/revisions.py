@@ -17,6 +17,7 @@ import agent_history as ah
 import connections
 import codex_import as ci
 from setup_backend import atomic_json, load_sources, source_enabled
+from history_app.reader_data import checkpoint
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS conversations(id TEXT PRIMARY KEY, title TEXT, active_version TEXT);
@@ -316,12 +317,13 @@ def sync_all(db, conversation=None, force=False):
     return report
 
 
-def members(db, conversation, include_merged=False, *, _items=None):
+def members(db, conversation, include_merged=False, *, _items=None, cancel=None):
     items = _items
     if items is None:
         scope = load_sources()
         items = []
         for raw in db.execute("SELECT * FROM conversation_versions WHERE conversation=? AND present=1 AND head IS NOT NULL AND state<>'merge-pending'", (conversation,)):
+            checkpoint(cancel)
             row = json.loads(raw['row_json'])
             if source_enabled(row, scope) and Path(row['path']).exists():
                 items.append(dict(raw))
@@ -346,13 +348,14 @@ def members(db, conversation, include_merged=False, *, _items=None):
     return [item for item in items if item['id'] not in covered]
 
 
-def tips(db, conversation, *, _items=None):
+def tips(db, conversation, *, _items=None, cancel=None):
     items = members(db, conversation) if _items is None else _items
     signatures = {item['id']: json.loads(item['event_ids']) if item['event_ids'] else
                   [event['id'] for event in revision(db, item['head'])['events']] for item in items if item['head']}
     active = db.execute('SELECT active_version FROM conversations WHERE id=?', (conversation,)).fetchone()[0]
     result = []
     for item in items:
+        checkpoint(cancel)
         signature = signatures.get(item['id'], [])
         if any(other != item['id'] and len(signatures[other]) > len(signature) and prefix(signature, signatures[other])
                for other in signatures):
@@ -517,7 +520,7 @@ def publish_claude(db, source, projected, cwd, intent=None, on_publish=None):
 
 
 @connections.snapshot()
-def group_rows(db, rows):
+def group_rows(db, rows, cancel=None):
     """Group only explicitly related versions; preserve unrelated same-ID files."""
     ensure(db)
     result, seen = [], set()
@@ -528,11 +531,13 @@ def group_rows(db, rows):
     physical_ids = list(available)
     enrolled = {}
     for offset in range(0, len(physical_ids), 500):
+        checkpoint(cancel)
         batch = physical_ids[offset:offset + 500]
         placeholders = ','.join('?' for _ in batch)
         enrolled.update((item['identity'], item) for item in db.execute(
             'SELECT * FROM conversation_versions WHERE identity IN (' + placeholders + ')', batch))
     for physical_id, row in identified:
+        checkpoint(cancel)
         item = enrolled.get(physical_id)
         if not item or not item['head']:
             result.append(row)
@@ -541,10 +546,10 @@ def group_rows(db, rows):
         if cid in seen:
             continue
         seen.add(cid)
-        all_members = members(db, cid, include_merged=True)
+        all_members = members(db, cid, include_merged=True, cancel=cancel)
         visible_members = members(db, cid, _items=all_members)
         choices = [member for member in all_members if member['identity'] in available]
-        heads = tips(db, cid, _items=visible_members)
+        heads = tips(db, cid, _items=visible_members, cancel=cancel)
         candidates = [head for head in heads if head['identity'] in available]
         active = db.execute('SELECT active_version FROM conversations WHERE id=?', (cid,)).fetchone()[0]
         selected = next((head for head in candidates if head['id'] == active), None) or \

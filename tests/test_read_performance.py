@@ -147,7 +147,7 @@ class ReadPerformanceTests(Fixture):
         with self.db:
             ah.forget_file(self.db, str(self.path))
         self.assertEqual(ui.list_rows(self.db, indexed=True, query='最新文本'), [])
-        self.db.execute("INSERT INTO file_views_fts(file_views_fts,rank) VALUES('integrity-check',1)")
+        self.db.execute("INSERT INTO file_view_parts_fts(file_view_parts_fts,rank) VALUES('integrity-check',1)")
 
     def test_old_database_search_remains_complete_before_incremental_backfill(self):
         self.db.executescript('DROP TRIGGER file_views_bi; DROP TRIGGER file_views_ai; DROP TRIGGER file_views_ad; DROP TRIGGER file_views_au; '
@@ -157,7 +157,7 @@ class ReadPerformanceTests(Fixture):
             self.assertEqual([row['id'] for row in ui.list_rows(migrated, indexed=True, query='原始问题')], ['s1'])
             ah.refresh_search_index(migrated)
             self.assertEqual([row['id'] for row in ui.list_rows(migrated, indexed=True, query='原始问题')], ['s1'])
-            self.assertEqual(migrated.execute('SELECT count(*) FROM file_view_search_coverage').fetchone()[0], 1)
+            self.assertEqual(migrated.execute('SELECT count(*) FROM file_view_part_coverage').fetchone()[0], 1)
 
     def test_legacy_replace_keeps_external_search_index_consistent(self):
         row = self.db.execute('SELECT * FROM file_views WHERE path=?', (str(self.path),)).fetchone()
@@ -166,7 +166,7 @@ class ReadPerformanceTests(Fixture):
                             (row['path'], row['stamp'], row['metadata'], row['turns'], 'legacy replacement marker'))
         self.assertEqual(ui.list_rows(self.db, indexed=True, query='原始问题'), [])
         self.assertEqual(len(ui.list_rows(self.db, indexed=True, query='replacement marker')), 1)
-        self.db.execute("INSERT INTO file_views_fts(file_views_fts,rank) VALUES('integrity-check',1)")
+        self.db.execute("INSERT INTO file_view_parts_fts(file_view_parts_fts,rank) VALUES('integrity-check',1)")
 
     def test_stale_report_snapshot_cannot_mark_a_restarted_runner_collected(self):
         identity = jobs.create(dict(ah.resolve(self.db, 's1')), dict(session='s1', cwd=self.cwd, kind='new'), 'a')

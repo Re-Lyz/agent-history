@@ -416,7 +416,7 @@ def finish(db, identity, *, manual=False):
         if selected:
             raise ValueError('Agent 非正常结束，旧文件保留；可手动重试同步。')
         store.activate(db, current)
-        ah.collect(db, only_paths=paths)
+        ah.require_collected(ah.collect(db, only_paths=paths))
         jobs.update(identity, sync_state='collected', sync_error='')
         release(db, identity)
         return None
@@ -437,7 +437,7 @@ def finish(db, identity, *, manual=False):
         compact(db, identity, current)
     # Publish completion only after the affected index is ready for the viewer.
     jobs.update(identity, sync_stage='indexing')
-    ah.collect(db, only_paths=paths)
+    ah.require_collected(ah.collect(db, only_paths=paths))
     if item:
         lifecycle.update(db, identity, state='cleaned', error='')
     jobs.update(identity, handoff_state='cleaned', sync_state='collected', sync_error='')

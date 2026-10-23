@@ -9,6 +9,7 @@ import launch_backend as launcher
 import new_conversation_ui
 import launch_jobs
 import conversation_store as conversations
+from history_app.reader_data import checkpoint
 
 
 def create_mixin(bindings, desktop):
@@ -241,59 +242,86 @@ def create_mixin(bindings, desktop):
             if getattr(self, 'preview_job', None) is not None:
                 self.root.after_cancel(self.preview_job)
             self.preview_job = None
-            with contextlib.closing(ah.connect()) as db:
-                self.show_launch_preview(db)
-
-        def show_launch_preview(self, db):
-            self.target_menu.delete(0, 'end')
-            rows = self.selected()
-            plans = {}
-            launch_reason = ''
-            if len(rows) == 1:
-                member = conversations.lookup(db, rows[0])
-                if member:
-                    import single_conversation
-                    try:
-                        launch_reason = single_conversation.reservation_reason(db, member, wait=False)
-                        single_conversation.latest(db, dict(member))
-                    except ValueError as error:
-                        launch_reason = str(error)
-            for name, label in self.target_labels.items():
-                reason, description = '', '请先选择对话'
-                if rows:
-                    try:
-                        option = bindings.launch_plan(db, rows[0], name, self.cwd.get())
-                        plans[name] = option
-                        description = option.get('description', '恢复选中版本')
-                        reason = launch_reason
-                    except (ValueError, OSError) as error:
-                        reason = str(error)
-                else:
-                    reason = description
-                ready = self.readiness.get(name, dict(ready=False, message='请先检查启动环境。'))
-                reason = reason or (ready['message'] if not ready['ready'] else '')
-                text = f'{bindings.command_label(name)} · {reason or description}'
-                self.target_menu.add_radiobutton(label=text, value=label, variable=self.target,
-                                                state='disabled' if reason else 'normal', command=self.target_changed)
-            try:
-                _, plan = self.current_plan(db, plans)
-                current = self.selected()[0]
-                if launch_reason:
-                    raise ValueError(launch_reason)
+            self.preview_request = getattr(self, 'preview_request', 0) + 1
+            request = self.preview_request
+            rows, labels = self.selected(), dict(self.target_labels)
+            if not rows:
+                self.target_menu.delete(0, 'end')
+                self.preview.set('')
+                self.launch_status.set('')
+                self.launch_button.state(['disabled'])
+                self.copy_button.state(['disabled'])
+                return
+            cwd, stamp = self.cwd.get(), self.reader_stamp
+            target = self.target_names.get(self.target.get())
+            readiness = dict(self.readiness)
+            self.launch_button.state(['disabled'])
+            self.copy_button.state(['disabled'])
+            cancel = lambda: request != self.preview_request
+            def work():
+                checkpoint(cancel)
+                plans, reasons, commands = {}, {}, {}
+                launch_reason = ''
+                with contextlib.closing(ah.connect()) as db:
+                    if rows:
+                        member = conversations.lookup(db, rows[0])
+                        if member:
+                            import single_conversation
+                            try:
+                                launch_reason = single_conversation.reservation_reason(db, member, wait=False)
+                                single_conversation.latest(db, dict(member))
+                            except ValueError as error:
+                                launch_reason = str(error)
+                        try:
+                            if stamp is None or bindings.transcript_stamp(rows[0]) != stamp:
+                                launch_reason = '会话已变化，请刷新历史后核对新增内容再启动。'
+                        except (ValueError, OSError) as error:
+                            launch_reason = str(error)
+                    for name in labels:
+                        checkpoint(cancel)
+                        commands[name] = bindings.command_label(name)
+                        reasons[name] = launch_reason or ('请先选择对话' if not rows else '')
+                        if rows:
+                            try:
+                                plans[name] = bindings.launch_plan(db, rows[0], name, cwd)
+                            except (ValueError, OSError) as error:
+                                reasons[name] = reasons[name] or str(error)
+                        ready = readiness.get(name, dict(ready=False, message='请先检查启动环境。'))
+                        reasons[name] = reasons[name] or (ready['message'] if not ready['ready'] else '')
+                return plans, reasons, commands
+            def done(result):
+                if cancel():
+                    return
+                plans, reasons, commands = result
+                self.target_menu.delete(0, 'end')
+                for name, label in labels.items():
+                    description = plans.get(name, {}).get('description', '恢复选中版本')
+                    self.target_menu.add_radiobutton(label=commands[name] + ' · ' + (reasons[name] or description),
+                        value=label, variable=self.target, state='disabled' if reasons[name] else 'normal',
+                        command=self.target_changed)
+                chosen = target
+                # Keep an explicit target choice; only choose an alternative
+                # when selecting a conversation whose default cannot be used.
+                if getattr(self, 'choose_preview_target', False):
+                    chosen = next((name for name in dict.fromkeys([target, rows[0]['source'] if rows else None, *labels])
+                                   if name in plans and not reasons[name]), target)
+                    self.choose_preview_target = False
+                if chosen in labels:
+                    self.target.set(labels[chosen])
+                reason = reasons.get(chosen, '请选择启动命令。')
+                plan = plans.get(chosen)
+                if reason or not plan:
+                    self.preview.set(reason if rows else '')
+                    self.launch_status.set('')
+                    return
                 self.preview.set(plan['preview'])
                 self.preview_label.configure(fg=P['text'], bg=P['code_bg'])
                 self.copy_button.state(['!disabled'])
-                target = self.target_names[self.target.get()]
-                readiness = self.readiness.get(target, dict(ready=False, message='请先检查启动环境。'))
-                self.launch_status.set(plan.get('description', '恢复选中版本') + '\n' + readiness['message'])
+                ready = readiness[chosen]
+                self.launch_status.set(plan.get('description', '恢复选中版本') + '\n' + ready['message'])
                 launching = any(job[0] == 'launch' for job in self.jobs.values())
-                self.launch_button.state(['!disabled'] if readiness['ready'] and not launching else ['disabled'])
-            except ValueError as error:
-                self.preview.set(str(error) if self.selected() else '')
-                self.preview_label.configure(fg=P['danger'], bg=P['card'] if not self.selected() else '#f8ebe8')
-                self.launch_button.state(['disabled'])
-                self.copy_button.state(['disabled'])
-                self.launch_status.set('')
+                self.launch_button.state(['!disabled'] if ready['ready'] and not launching else ['disabled'])
+            self.background(work, done, label='正在检查启动选项…', key='launch-preview', replace=True, refresh_preview=False)
 
         def browse(self):
             folder = filedialog.askdirectory(initialdir=self.cwd.get() or str(Path.home()))
@@ -332,7 +360,7 @@ def create_mixin(bindings, desktop):
                 self.preferences['default_target'] = target
                 if row['cwd']:
                     self.preferences['project_targets'][support.project_key(row['cwd'])] = target
-                self.busy.set('终端已打开；请在终端确认恢复结果')
+                self.notice('终端已打开；请在终端确认恢复结果')
             self.background(prepare, done, label='正在准备选中的会话版本…', key='launch')
 
     return LaunchController

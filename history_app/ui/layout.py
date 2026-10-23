@@ -35,6 +35,8 @@ def create_mixin(bindings, desktop):
             ttk.Button(top, text='刷新历史', style='Soft.TButton',
                        command=lambda: self.background(self.reindex, self.after_reindex,
                                                        label='正在更新历史索引…', key='reindex')).pack(side='left', padx=8)
+            ttk.Button(top, text='重试失败索引', style='Soft.TButton',
+                       command=self.retry_failed_indexes).pack(side='left')
             status_bar = ttk.Frame(root, padding=(16, 0, 16, 8))
             status_bar.pack(side='bottom', fill='x')
             ttk.Label(status_bar, textvariable=self.busy, style='Bar.TLabel').pack(side='left')
@@ -147,7 +149,7 @@ def create_mixin(bindings, desktop):
             self.find_entry.pack(side='left', fill='x', expand=True)
             self.find_entry.bind('<Return>', lambda e: self.find_message(1))
             self.find_entry.bind('<Shift-Return>', lambda e: self.find_message(-1))
-            self.find_query.trace_add('write', lambda *args: self.highlight_matches())
+            self.find_query.trace_add('write', lambda *args: self.schedule_find())
             ttk.Button(reader_bar, text='上一处', style='Soft.TButton', command=lambda: self.find_message(-1)).pack(side='left')
             ttk.Button(reader_bar, text='下一处', style='Soft.TButton', command=lambda: self.find_message(1)).pack(side='left')
             self.find_status = tk.StringVar(value='Ctrl+F 搜索此对话')

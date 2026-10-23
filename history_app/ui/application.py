@@ -229,6 +229,8 @@ def run_ui():
             root.geometry(self.normal_geometry)
             root.minsize(min(1100, root.winfo_screenwidth() - 40), min(640, root.winfo_screenheight() - 80))
             root.protocol('WM_DELETE_WINDOW', self.close)
+            root.bind('<Destroy>', lambda event: self.read_workers.close()
+                      if event.widget is root and hasattr(self, 'read_workers') else None, add='+')
             root.bind('<Configure>', self.remember_geometry, add='+')
             root.report_callback_exception = self.callback_error
             self.busy = tk.StringVar(value='正在索引历史…')
@@ -271,6 +273,8 @@ def run_ui():
                 self.reader_request = getattr(self, 'reader_request', 0) + 1
                 self.list_request = getattr(self, 'list_request', 0) + 1
                 self.render_request = getattr(self, 'render_request', 0) + 1
+                if hasattr(self, 'read_workers'):
+                    self.read_workers.close()
                 try:
                     for callback in self.root.tk.call('after', 'info'):
                         # Tk timers can contain Tcl lists, not Python command names.
@@ -294,6 +298,7 @@ def run_ui():
     root = tk.Tk()
     style(root)
     app = App(root)
+    root.history_app = app
 
     def place_sashes():
         width = app.pane.winfo_width()

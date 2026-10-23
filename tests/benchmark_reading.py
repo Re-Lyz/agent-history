@@ -59,6 +59,17 @@ def benchmark(files, messages, repeat):
         legacy['ordinal'] = messages + 1
         result['tool_ordinal'] = measure(lambda: tool_details.read(legacy), repeat)
         result['tool_offset'] = measure(lambda: tool_details.read(locator), repeat)
+        ah.require_collected(ah.collect(fixture.db, only_paths={fixture.path}))
+        def append_index(incremental):
+            with fixture.path.open('a', encoding='utf-8') as stream:
+                stream.write(json.dumps(dict(type='response_item', payload=dict(type='message', role='assistant',
+                    content=[dict(type='output_text', text='Synthetic appended message')]))) + '\n')
+            if not incremental:
+                with fixture.db:
+                    fixture.db.execute('DELETE FROM file_view_incremental WHERE path=?', (str(fixture.path),))
+            ah.require_collected(ah.collect(fixture.db, only_paths={fixture.path}))
+        result['append_rebuild'] = measure(lambda: append_index(False), repeat)
+        result['append_incremental'] = measure(lambda: append_index(True), repeat)
         print(json.dumps(result))
     finally:
         fixture.tearDown()

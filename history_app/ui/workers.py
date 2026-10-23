@@ -11,6 +11,8 @@ import settings_ui
 import launch_jobs
 import conversation_store as conversations
 from history_app.reader_data import ReadCancelled
+from history_app.read_workers import ReadWorkers
+from history_app import performance
 
 
 def create_mixin(bindings, desktop):
@@ -25,7 +27,8 @@ def create_mixin(bindings, desktop):
                 if replace:
                     self.pending_jobs[key] = (work, done, label, refresh_preview)
                 return  # repeated clicks do not start the same operation again
-            if key != 'history-list':
+            if key not in ('history-list', 'reader', 'reader-page', 'reader-full', 'reader-search',
+                           'markdown', 'selection-details', 'launch-preview') and not (key and key.startswith('tool-detail-')):
                 self.idle_notice = None
             self.job_serial += 1
             serial = self.job_serial
@@ -41,11 +44,26 @@ def create_mixin(bindings, desktop):
 
             def runner():
                 try:
-                    result = work()
+                    phase = 'tool-detail' if key and key.startswith('tool-detail-') else {'history-list': 'listing', 'reader': 'reader', 'reader-page': 'reader',
+                             'reader-full': 'search', 'launch-preview': 'launch-preview',
+                             'selection-details': 'reader', 'tool-detail': 'tool-detail', 'reader-search': 'search'}.get(key)
+                    if phase:
+                        with performance.measure(phase):
+                            result = work()
+                    else:
+                        result = work()
                     self.results.put((serial, done, result, None))
                 except Exception as error:      # surfaced in the UI thread
                     self.results.put((serial, done, None, error))
-            threading.Thread(target=runner, daemon=True).start()
+                finally:
+                    performance.flush(ah.DATA)
+            if key in ('history-list', 'reader', 'reader-page', 'reader-full', 'markdown',
+                       'selection-details', 'launch-preview', 'tool-detail', 'reader-search') or (key and key.startswith('tool-detail-')):
+                if not hasattr(self, 'read_workers'):
+                    self.read_workers = ReadWorkers()
+                self.read_workers.submit(runner)
+            else:
+                threading.Thread(target=runner, daemon=True).start()
 
         def poll(self):
             with contextlib.suppress(queue.Empty):
@@ -55,8 +73,6 @@ def create_mixin(bindings, desktop):
                     if completed_job[0] != 'history-list' or error:
                         self.busy.set('')
                     try:
-                        if error and completed_job[0] == 'reader-full':
-                            self.reader_full_loading = None
                         if isinstance(error, ReadCancelled):
                             pass
                         elif error:
@@ -84,6 +100,8 @@ def create_mixin(bindings, desktop):
                         self.busy.set(self.jobs[max(self.jobs)][1])
                     elif self.idle_notice is not None:
                         self.busy.set(self.idle_notice)
+                    elif not self.busy.get():
+                        self.busy.set(f'{len(self.rows)} 条')
             self.root.after(100, self.poll)
 
         def reindex(self):
@@ -92,15 +110,19 @@ def create_mixin(bindings, desktop):
                     raise ValueError('历史索引正在使用，请稍后重试。')
                 db = ah.connect()
                 try:
-                    ah.collect(db)
+                    indexed = ah.collect(db)
                     report = conversations.sync_all(db)
+                    report['failed'].extend(getattr(indexed, 'failed', []))
                     launch_jobs.reconcile()
                     import handoff_lifecycle
                     handoff_lifecycle.retry_pending(db)
                     launch_jobs.mark_collected(report)
+                    failures = db.execute('SELECT count(*) FROM index_failures').fetchone()[0]
                 finally:
                     db.close()
-            return support.review_snapshot()
+            snapshot = support.review_snapshot()
+            snapshot['index_failures'] = failures
+            return snapshot
 
         def initial_load(self):
             trash.purge()
@@ -168,6 +190,24 @@ def create_mixin(bindings, desktop):
             else:
                 self.review_info.set('尚无完整清理报告；重新分析只生成建议，不删除对话。')
             self.refresh()
+            failures = snapshot.get('index_failures', 0)
+            if failures:
+                self.notice(f'{failures} 个文件索引待重试；已有内容保留，可点击“重试失败索引”。')
+
+        def retry_failed_indexes(self):
+            def work():
+                with ah.collect_lock(wait=True) as locked:
+                    if not locked:
+                        raise ValueError('历史索引正在使用，请稍后重试。')
+                    with contextlib.closing(ah.connect()) as db:
+                        paths = {row['path'] for row in db.execute('SELECT path FROM index_failures')}
+                        result = ah.collect(db, only_paths=paths)
+                        return len(paths), len(getattr(result, 'failed', []))
+            def done(result):
+                self.projects_dirty = True
+                self.refresh()
+                self.notice(f'已重试 {result[0]} 个文件，仍有 {result[1]} 个待处理。')
+            self.background(work, done, label='正在重试失败索引…', key='retry-index', refresh_preview=False)
 
         def reanalyze(self):
             self.background(support.rebuild_review, self.after_reindex,

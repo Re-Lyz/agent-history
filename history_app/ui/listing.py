@@ -105,7 +105,7 @@ def create_mixin(bindings, desktop):
                     self.initial_list_pending = False
                     if not rows or not (ah.ROOT / 'connections.json').exists():
                         self.setup_prompted = True
-                        self.busy.set('暂无历史，请通过配置向导选择本机历史目录。')
+                        self.notice('暂无历史，请通过配置向导选择本机历史目录。')
                         self.setup_sources()
 
             self.background(load, done, label='正在搜索历史…' if query else '正在读取历史…',

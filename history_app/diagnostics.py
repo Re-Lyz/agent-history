@@ -13,6 +13,7 @@ import sqlite3
 import sys
 
 from . import configuration
+from . import performance
 
 
 def diagnose(paths, deep=False):
@@ -59,7 +60,9 @@ def diagnose(paths, deep=False):
                 status['tables'] = len(tables)
                 if deep:
                     status['integrity'] = 'ok' if db.execute('PRAGMA quick_check(1)').fetchone()[0] == 'ok' else 'failed'
-                status['compatibility'] = 'supported' if status['schema'] in (3, 4) else 'needs-review'
+                if 'index_failures' in tables:
+                    status['index_failures'] = db.execute('SELECT count(*) FROM index_failures').fetchone()[0]
+                status['compatibility'] = 'supported' if status['schema'] in (3, 4, 5) else 'needs-review'
         except (OSError, sqlite3.Error):
             status['state'] = 'unreadable'
     states, unreadable = Counter(), 0
@@ -81,6 +84,7 @@ def diagnose(paths, deep=False):
         report['installation'] = dict(state='not-installed')
     except (OSError, ValueError, TypeError, AttributeError):
         report['installation'] = dict(state='unreadable')
+    report['performance'] = performance.summary(paths.data)
     report['local_paths'] = local
     return report
 
@@ -88,7 +92,7 @@ def diagnose(paths, deep=False):
 def shareable(report):
     """Only allow fixed structural fields; never export paths, commands or error text."""
     return {key: report[key] for key in ('version', 'application', 'python', 'system', 'sqlite',
-            'dependencies', 'programs', 'configuration', 'database', 'jobs', 'installation')}
+            'dependencies', 'programs', 'configuration', 'database', 'jobs', 'installation', 'performance')}
 
 
 def render(report, include_paths=False):

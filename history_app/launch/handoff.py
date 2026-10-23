@@ -387,7 +387,10 @@ def finish(db, identity, *, manual=False, allow_branch=False):
             if pending['state'] in ('prepared', 'running', 'interrupted'):
                 raise ValueError('其他接续任务仍引用临时会话，完成后可重试清理。')
         retire(db, item, temporary, durable)
-    ah.collect(db)
+    indexed = ah.collect(db)
+    affected = {json.loads(version['row_json'])['path'] for version in (temporary, durable)}
+    ah.require_collected(ah.CollectionResult(indexed, [error for error in getattr(indexed, 'failed', [])
+                                                     if error['path'] in affected]))
     jobs.update(identity, handoff_state='cleaned', sync_state='collected', sync_error='')
     return get(db, identity)
 

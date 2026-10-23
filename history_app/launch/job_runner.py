@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+from history_app import performance
 
 import agent_history as ah
 import launch_jobs as jobs
@@ -70,6 +71,14 @@ def checked_inner(inner):
 
 
 def sync_exit(identity):
+    try:
+        with performance.measure('sync'):
+            return _sync_exit(identity)
+    finally:
+        performance.flush(ah.DATA, force=True)
+
+
+def _sync_exit(identity):
     """Retry only transient native locks after confirmed successful Agent exit.
 
     Release the collector lock between attempts. Never rerun the Agent or
@@ -84,7 +93,9 @@ def sync_exit(identity):
             time.sleep(delay)
         try:
             jobs.update(identity, sync_stage='waiting-collector')
+            waiting = time.monotonic()
             with ah.collect_lock(wait=True) as locked:
+                performance.record('lock-wait', time.monotonic() - waiting)
                 if not locked:
                     raise TimeoutError('History collector is busy.')
                 with contextlib.closing(ah.connect()) as db:
@@ -96,8 +107,9 @@ def sync_exit(identity):
                     else:
                         # New/unowned launches still need full discovery.
                         jobs.update(identity, sync_stage='indexing')
-                        ah.collect(db)
+                        indexed = ah.collect(db)
                         report = conversation_store.sync_all(db)
+                        report['failed'].extend(getattr(indexed, 'failed', []))
                         job = jobs.read(identity)
                         if job['source_path'] in report.get('skipped', []):
                             raise ValueError('当前历史来源已停用，重新接入后可重试采集。')

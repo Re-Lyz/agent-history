@@ -2,6 +2,7 @@
 import tkinter as tk
 from tkinter import ttk
 import tool_details
+from history_app.reader_data import checkpoint
 
 
 class ToolPanel:
@@ -59,14 +60,20 @@ class ToolPanel:
             if offset+32_768 < len(value):
                 self.app.root.after(1, lambda: batch(offset+32_768))
                 return
-            query = self.app.find_query.get()
-            if query:
-                found = self.text.search(query, '1.0', stopindex='end', nocase=True)
-                if found:
-                    self.text.tag_configure('match', background='#f6e3a4')
-                    self.text.tag_add('match', found, f'{found}+{len(query)}c')
-                    self.text.see(found)
+            self.highlight()
         batch()
+
+    def highlight(self):
+        if not self.text or not self.frame.winfo_exists():
+            return
+        self.text.tag_remove('match', '1.0', 'end')
+        query = self.app.find_query.get()
+        if query:
+            found = self.text.search(query, '1.0', stopindex='end', nocase=True)
+            if found:
+                self.text.tag_configure('match', background='#f6e3a4')
+                self.text.tag_add('match', found, f'{found}+{len(query)}c')
+                self.text.see(found)
 
     def toggle(self):
         anchor = self.app.reader_anchor()
@@ -78,7 +85,9 @@ class ToolPanel:
             if not self.loaded and not self.loading:
                 self.loading = True
                 self.write('正在读取完整工具记录…')
+                request = self.app.reader_request
                 def work():
+                    checkpoint(lambda: request != self.app.reader_request)
                     try:
                         return '\n\n'.join(('调用参数' if row['role'] == 'tool_call' else '工具输出') + '\n' +
                             (tool_details.read(row['detail']) if row.get('detail') else
@@ -90,7 +99,9 @@ class ToolPanel:
                         self.loading = False
                         self.loaded = True
                         self.write(value)
-                self.app.background(work, done, label='读取工具详情…', key=None, refresh_preview=False)
+                # Each panel has its own result, so use the bounded read pool
+                # without coalescing unrelated tool calls.
+                self.app.background(work, done, label='读取工具详情…', key='tool-detail-' + str(id(self)), refresh_preview=False)
         else:
             self.body.pack_forget()
         self.button.configure(text=('▾ ' if self.expanded else '▸ ') + self.label + self.status)

@@ -257,7 +257,11 @@ class TkRenderer:
             self.commands.append(self.text.tag_bind(tag, '<Enter>', lambda event: self.text.configure(cursor='hand2')))
             self.commands.append(self.text.tag_bind(tag, '<Leave>', lambda event: self.text.configure(cursor='xterm')))
             tags += ['md_link', tag]
-        self.text.insert('end', span.text, tuple(tags))
+        self.text.insert(getattr(self, 'index', 'end'), span.text, tuple(tags))
+
+    def position(self):
+        index = getattr(self, 'index', 'end')
+        return self.text.index('end-1c' if index == 'end' else index)
 
     def render(self, source):
         for _ in self.iter_render(source):
@@ -273,25 +277,32 @@ class TkRenderer:
                 button = ttk.Button(self.text, text='复制代码', style='Soft.TButton',
                                     command=lambda code=element.text: self.copy_code(code))
                 self.widgets.append(button)
-                self.text.window_create('end', window=button, padx=4)
+                self.text.window_create(getattr(self, 'index', 'end'), window=button, padx=4)
                 self.insert(Span('\n', element.styles + ('code',)))
                 tokens = highlights.get((element.text, element.language)) if highlights is not None else None
                 for value, name in tokens if tokens is not None else highlighted(element.text, element.language):
-                    start = self.text.index('end-1c')
+                    start = self.position()
                     self.insert(Span(value, element.styles + ('code',)))
                     if name:
-                        self.text.tag_add('md_syntax_' + name, start, 'end-1c')
+                        self.text.tag_add('md_syntax_' + name, start, self.position())
                     yield
                 if element.text and not element.text.endswith('\n'):
                     self.insert(Span('\n', element.styles + ('code',)))
                 self.insert(Span('\n'))
             else:
-                self.render_table(element)
+                yield from self.iter_table(element)
             yield
 
     def render_table(self, table):
-        widths = [max(self.table_font.measure(''.join(span.text for span in row[index]))
-                      for row in table.rows) + 24 for index in range(len(table.alignments))]
+        for _ in self.iter_table(table):
+            pass
+
+    def iter_table(self, table):
+        widths = [0] * len(table.alignments)
+        for row in table.rows:
+            for index, cell in enumerate(row):
+                widths[index] = max(widths[index], self.table_font.measure(''.join(span.text for span in cell)) + 24)
+            yield
         tag = f'md_columns_{len(self.dynamic_tags)}'
         self.dynamic_tags.append(tag)
         stops, offset = [], 0
@@ -301,11 +312,12 @@ class TkRenderer:
             offset += width
         self.text.tag_configure(tag, tabs=tuple(stops), tabstyle='wordprocessor')
         for row_index, row in enumerate(table.rows):
-            start = self.text.index('end-1c')
+            start = self.position()
             for cell in row:
                 self.insert(Span('\t', table.styles + ('table',)))
                 for span in cell:
                     self.insert(span, table.styles + ('table',) + (('table_header',) if row_index == 0 else ()))
             self.insert(Span('\n', table.styles + ('table',)))
-            self.text.tag_add(tag, start, 'end-1c')
+            self.text.tag_add(tag, start, self.position())
+            yield
         self.insert(Span('\n'))

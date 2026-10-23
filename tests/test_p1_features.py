@@ -185,7 +185,7 @@ class NewViewerTests(viewer_tests.ViewerInteractionTests):
             tree = next(w for w in self.widgets() if isinstance(w, self.ttk.Treeview) and 'check' in w.cget('columns'))
             self.wait(lambda: len(tree.get_children()) == 2)
             tree.selection_set(next(i for i in tree.get_children() if 'two.jsonl' in i))
-            root.update()
+            self.wait_reader()
             self.wait_layout()
             title = next(w for w in self.widgets() if w.winfo_name() == 'action_title')
             first, fifth = title.bbox('1.0'), title.bbox('1.0+5c')
@@ -251,6 +251,7 @@ class NewViewerTests(viewer_tests.ViewerInteractionTests):
             self.wait(lambda: len(tree.get_children()) == 2)
             tree.selection_set(next(i for i in tree.get_children() if 'two.jsonl' in i))
             self.wait(lambda: len(panels) == 160)
+            self.wait_reader()
             self.assertTrue(heartbeats)
             self.assertLess(heartbeats[0], 160)
             self.assertTrue(all(item.body is None and item.text is None for item in panels))
@@ -260,7 +261,7 @@ class NewViewerTests(viewer_tests.ViewerInteractionTests):
             with patch.object(ui, 'launch_plan', wraps=ui.launch_plan) as plan:
                 for _ in range(10):
                     app.update_preview()
-                root.update()
+                self.wait_reader()
                 self.assertEqual(plan.call_count, len(app.target_labels))
                 plan.reset_mock()
                 with patch.object(app, 'background', wraps=app.background) as background:
@@ -306,7 +307,11 @@ class NewViewerTests(viewer_tests.ViewerInteractionTests):
             self.wait(lambda: len(tree.get_children())==1 and 'one.jsonl' in tree.get_children()[0])
             tree.selection_set(tree.get_children()[0]); root.update()
             self.wait(lambda: any(isinstance(w,self.tk.Text) and 'one 0' in w.get('1.0','end') for w in self.widgets()))
-            self.wait(lambda: any('450 / 450' in value for value in self.statuses()))
+            self.wait_reader()
+            app = root.history_app
+            self.assertEqual(len(app.reader_messages), 450)
+            self.assertLessEqual(len(app.message_marks), ui.MESSAGE_LIMIT)
+            self.assertTrue(app.text.tag_ranges('find_current'))
             deadline=time.monotonic()+.2
             while time.monotonic()<deadline: root.update(); time.sleep(.01)
             self.assertEqual(len(tree.get_children()),1)

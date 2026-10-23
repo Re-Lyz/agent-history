@@ -1,5 +1,9 @@
 # Changelog
 
+- 继续优化阅读与同步：后台版本／启动预览、合并输入与分批高亮、命中附近分页、向前插入保留工具面板、分批表格和有界读取线程。
+- 数据库版本 5 增加经过完整前缀核验的追加搜索片段、逐文件索引失败与定向重试、按修订失效的显示分组缓存；保留旧进程检索回退和原生安全校验。
+- 性能诊断提供固定阶段的数值耗时与计数；修正 Linux 对话搜索回归的阶段等待。
+
 ## Unreleased
 
 - Page collected history in SQLite, read preview tails on demand across bounded native forks, and seek directly to full tool records. Avoid duplicate project-list scans, narrow exact physical-version search with FTS, cancel obsolete reads, display cached rows during startup, and cache completed launch reports with guarded state updates. See [performance measurements](docs/performance.md).

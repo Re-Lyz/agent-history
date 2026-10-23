@@ -3,11 +3,72 @@ import json
 import math
 from pathlib import Path
 import sqlite3
+from collections import OrderedDict, defaultdict
+from functools import wraps
+import threading
+import connections
 
 import conversation_store as conversations
 import setup_backend
 import ui_support as support
 from history_app.reader_data import checkpoint
+
+_groups = OrderedDict()
+_group_lock = threading.Lock()
+_versions = OrderedDict()
+
+
+def cached_groups(db, rows, cancel):
+    """Cache display decisions, keyed by committed revisions and live presence.
+
+    Native launch/cleanup validators never consume this cache.
+    """
+    grouped = defaultdict(list)
+    for row in rows:
+        grouped[db.execute('SELECT conversation FROM listing_versions WHERE identity=?',
+                           (row['member_identity'],)).fetchone()[0]].append(row)
+    database = db.execute('PRAGMA database_list').fetchone()[2]
+    scope = json.dumps(setup_backend.load_sources(), sort_keys=True)
+    for cid, candidates in grouped.items():
+        checkpoint(cancel)
+        revision = db.execute('SELECT revision FROM logical_clock WHERE conversation=?', (cid,)).fetchone()
+        presence = []
+        for item in db.execute("SELECT id,json_extract(row_json,'$.path') AS path FROM conversation_versions "
+                               "WHERE conversation=? AND present=1 AND head IS NOT NULL AND state<>'merge-pending'", (cid,)):
+            checkpoint(cancel)
+            presence.append((item['id'], Path(item['path']).exists()))
+        key = (database, cid, revision[0] if revision else 0, scope,
+               tuple(sorted(row['member_identity'] for row in candidates)), tuple(sorted(presence)))
+        with _group_lock:
+            recipe = _groups.get(key)
+        if recipe is None:
+            result = conversations.group_rows(db, candidates, cancel=cancel)
+            recipe = [(row['member_identity'], {key: row[key] for key in
+                       ('conversation', 'version', 'branches', 'version_count', 'logical') if key in row}) for row in result]
+            with _group_lock:
+                _groups[key] = recipe
+                _groups.move_to_end(key)
+                while len(_groups) > 1024:
+                    _groups.popitem(last=False)
+        available = {row['member_identity']: row for row in candidates}
+        for identity, extra in recipe:
+            yield dict(available[identity], **extra)
+
+
+def cancellable(function):
+    @wraps(function)
+    @connections.snapshot()
+    def wrapped(db, *args, **kwargs):
+        cancel = kwargs.get('cancel')
+        db.set_progress_handler(lambda: int(bool(cancel and cancel())), 1000)
+        try:
+            return function(db, *args, **kwargs)
+        except sqlite3.OperationalError:
+            checkpoint(cancel)
+            raise
+        finally:
+            db.set_progress_handler(None, 0)
+    return wrapped
 
 
 class HistoryPage(list):
@@ -48,14 +109,28 @@ def versions(db, cancel):
     db.execute('CREATE TEMP TABLE IF NOT EXISTS listing_versions(path TEXT,source TEXT,identity TEXT,'
                'conversation TEXT,title TEXT,PRIMARY KEY(path,source))')
     db.execute('DELETE FROM listing_versions')
-    for item in db.execute('SELECT v.row_json,v.identity,v.conversation,t.title FROM conversation_versions v LEFT JOIN conversation_titles t '
-                           'ON t.conversation=v.conversation').fetchall():
+    database = db.execute('PRAGMA database_list').fetchone()[2]
+    for item in db.execute('SELECT DISTINCT v.conversation,coalesce(c.revision,0) AS revision,t.title '
+                           'FROM conversation_versions v LEFT JOIN logical_clock c ON c.conversation=v.conversation '
+                           'LEFT JOIN conversation_titles t ON t.conversation=v.conversation').fetchall():
         checkpoint(cancel)
-        row = json.loads(item['row_json'])
-        # A path or native ID alone never establishes conversation membership.
-        if conversations.identity(row) == item['identity']:
-            db.execute('INSERT OR REPLACE INTO listing_versions VALUES (?,?,?,?,?)',
-                       (row['path'], row['source'], item['identity'], item['conversation'], item['title']))
+        key = (database, item['conversation'], item['revision'])
+        with _group_lock:
+            records = _versions.get(key)
+        if records is None:
+            records = [(json.loads(raw['row_json']), raw['identity']) for raw in db.execute(
+                'SELECT row_json,identity FROM conversation_versions WHERE conversation=?', (item['conversation'],))]
+            with _group_lock:
+                _versions[key] = records
+                while len(_versions) > 1024:
+                    _versions.popitem(last=False)
+        projected = []
+        for row, identity in records:
+            checkpoint(cancel)
+            # Validate current connection identity even on a revision-cache hit.
+            if conversations.identity(row) == identity:
+                projected.append((row['path'], row['source'], identity, item['conversation'], item['title']))
+        db.executemany('INSERT OR REPLACE INTO listing_versions VALUES (?,?,?,?,?)', projected)
 
 
 FIELDS = ('key', 'id', 'tool', 'source', 'path', 'cwd', 'title', 'started', 'updated', 'turns',
@@ -63,6 +138,7 @@ FIELDS = ('key', 'id', 'tool', 'source', 'path', 'cwd', 'title', 'started', 'upd
           'message_count', 'view_stamp')
 
 
+@cancellable
 def page(db, source='', query='', include_imports=False, include_internal=False, only=None, limit=500,
          project=None, sort_by='time', descending=True, offset=0, logical=False, cancel=None, keep_paths=None):
     if sort_by not in ('time', 'source', 'turns', 'title') or not isinstance(descending, bool):
@@ -95,10 +171,12 @@ def page(db, source='', query='', include_imports=False, include_internal=False,
         text_parameters = [folded]
         if len(folded) >= 3 and '\x00' not in folded:
             # FTS narrows candidates; instr retains exact substring semantics.
-            text_match = '(view_rowid IN (SELECT rowid FROM file_views_fts WHERE file_views_fts MATCH ?) '
-            text_match += 'OR view_rowid NOT IN (SELECT view_rowid FROM file_view_search_coverage)) AND instr(search_text,?)>0'
             grams = dict.fromkeys(folded[start:start + 3] for start in (0, (len(folded) - 3) // 2, len(folded) - 3))
-            text_parameters.insert(0, ' AND '.join('"' + gram.replace('"', '""') + '"' for gram in grams))
+            candidates = ' AND '.join('path IN (SELECT p.path FROM file_view_parts p JOIN file_view_parts_fts f '
+                                      'ON f.rowid=p.rowid WHERE file_view_parts_fts MATCH ?)' for _ in grams)
+            text_match = '((' + candidates + ') OR view_rowid NOT IN '
+            text_match += '(SELECT view_rowid FROM file_view_part_coverage)) AND instr(search_text,?)>0'
+            text_parameters = ['"' + gram.replace('"', '""') + '"' for gram in grams] + [folded]
         where.append('(instr(history_fold(title || \' \' || cwd || \' \' || id),?)>0 OR (' + text_match + '))')
         parameters.extend([folded, *text_parameters])
     cte = '''WITH base AS (
@@ -122,7 +200,7 @@ def page(db, source='', query='', include_imports=False, include_internal=False,
         enrolled = [dict(row) for row in db.execute(cte + 'SELECT ' + ','.join(FIELDS) +
                                                    ' FROM filtered WHERE member_identity IS NOT NULL', parameters)]
         checkpoint(cancel)
-        for row in conversations.group_rows(db, enrolled):
+        for row in cached_groups(db, enrolled, cancel):
             db.execute('INSERT INTO listing_grouped VALUES (?,?,?)',
                        (row['path'], row['source'], json.dumps(row, ensure_ascii=False)))
     selected = '(member_identity IS NULL OR g.path IS NOT NULL)' if grouped else '1'

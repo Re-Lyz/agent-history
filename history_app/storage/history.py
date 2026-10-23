@@ -24,6 +24,7 @@ import time
 import uuid
 import codex_import
 import connections
+from history_app import performance
 
 from history_app.paths import SOURCE
 
@@ -89,16 +90,30 @@ def connect():
     DATA.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(DATA / 'history.db', timeout=30)
     db.row_factory = sqlite3.Row
-    version = db.execute('PRAGMA user_version').fetchone()[0]
-    if version >= 4:
+    try:
+        if db.execute('PRAGMA user_version').fetchone()[0] >= 5:
+            return db
+        # First-window discovery and cached-list reads can open concurrently.
+        # Recheck under the shared schema lock instead of rebuilding twice.
+        with file_lock(DATA / 'schema.lock', True) as locked:
+            if not locked:
+                raise TimeoutError('History schema upgrade is busy.')
+            version = db.execute('PRAGMA user_version').fetchone()[0]
+            if version < 5:
+                upgrade(db, version)
         return db
+    except Exception:
+        db.close()
+        raise
+
+
+def upgrade(db, version):
     import conversation_titles
     if version >= 2:
-        db.executescript(conversation_titles.SCHEMA)
-        db.executescript(SEARCH_SCHEMA)
-        db.execute('PRAGMA user_version=4')
-        db.commit()
-        return db
+        from .read_model import SCHEMA as READ_SCHEMA
+        db.executescript('BEGIN IMMEDIATE;\n' + conversation_titles.SCHEMA + READ_SCHEMA +
+                        '\nCREATE INDEX IF NOT EXISTS files_session ON files(session_key);\nPRAGMA user_version=5;\nCOMMIT;')
+        return
     db.executescript(SCHEMA)
     db.executescript(codex_import.SCHEMA)
     import conversation_store
@@ -109,10 +124,9 @@ def connect():
         if column not in columns:
             db.execute(f'ALTER TABLE imports ADD COLUMN {column} {kind}')
     db.executescript(conversation_titles.SCHEMA)
-    db.executescript(SEARCH_SCHEMA)
-    db.execute('PRAGMA user_version=4')
-    db.commit()
-    return db
+    from .read_model import SCHEMA as READ_SCHEMA
+    db.executescript('BEGIN IMMEDIATE;\n' + READ_SCHEMA +
+                    '\nCREATE INDEX IF NOT EXISTS files_session ON files(session_key);\nPRAGMA user_version=5;\nCOMMIT;')
 
 
 from history_app.locks import file_lock
@@ -329,49 +343,100 @@ PARSERS = {'codex': parse_codex, 'claude': parse_claude}
 # ---------------------------------------------------------------- collector
 
 def prefix_hash(path, size):
-    value = hashlib.sha256()
+    return prefix_digest(path, size).hexdigest()
+
+
+def prefix_digest(path, size, start=0, state=None):
+    value = state.copy() if state is not None else hashlib.sha256()
     with Path(path).open('rb') as stream:
+        stream.seek(start)
+        size -= start
         while size:
             chunk = stream.read(min(size, 1024 * 1024))
             if not chunk:
-                break
+                raise ValueError('会话在校验期间被截断。')
             value.update(chunk)
             size -= len(chunk)
-    return value.hexdigest()
+    return value
+
+
+class CollectionResult(int):
+    def __new__(cls, changed, failed=()):
+        value = super().__new__(cls, changed)
+        value.failed = list(failed)
+        return value
+
+
+def require_collected(result):
+    if getattr(result, 'failed', None):
+        raise ValueError(f'对话内容已保留，{len(result.failed)} 个文件的索引尚未完成；请重试索引。')
+    return result
+
+
+def index_failure(db, path, stage, error):
+    value = dict(path=path, stage=stage, error=str(error))
+    with db:
+        db.execute('INSERT INTO index_failures VALUES (?,?,?,?) ON CONFLICT(path) DO UPDATE SET '
+                   'stage=excluded.stage,error=excluded.error,updated=excluded.updated',
+                   (path, stage, str(error), datetime.datetime.now(datetime.timezone.utc).isoformat()))
+    return value
 
 
 @connections.snapshot()
 def collect(db, verbose=False, only_paths=None):
+    started = time.monotonic()
     only_paths = {str(Path(path).resolve()) for path in only_paths} if only_paths is not None else None
-    seen, changed = set(), 0
+    seen, changed, failed, verified, unreadable = set(), 0, [], {}, set()
     discovered = discover() if only_paths is None else discover_paths(only_paths)
     for tool, source, path, titles in discovered:
         key = str(path)
         if only_paths is not None and key not in only_paths:
             continue
+        if key in seen:
+            continue
         seen.add(key)
         try:
             stat = path.stat()
-        except OSError:
+        except OSError as error:
+            failed.append(index_failure(db, key, 'read', error))
+            unreadable.add(key)
             continue
         row = db.execute('SELECT * FROM files WHERE path=?', (key,)).fetchone()
         if row and row['size'] == stat.st_size and row['mtime'] == stat.st_mtime:
             if tool == 'codex' and row['session_key'] and row['seq'] >= 0:
                 refresh_title(db, row['session_key'], titles)
             continue
-        if row and row['seq'] < 0:
-            row = None               # duplicate copy that changed: decide ownership again
-        fingerprint = db.execute('SELECT hash FROM file_fingerprints WHERE path=?', (key,)).fetchone()
-        if row and (stat.st_size < row['offset'] or not fingerprint or
-                    prefix_hash(path, row['offset']) != fingerprint['hash']):
-            forget_file(db, key)     # rewritten or truncated: rebuild from scratch
-            row = None
-        ingest(db, tool, source, path, stat, row, titles)
-        indexed = db.execute('SELECT offset FROM files WHERE path=?', (key,)).fetchone()
-        if indexed:
-            db.execute('INSERT OR REPLACE INTO file_fingerprints VALUES (?,?)',
-                       (key, prefix_hash(path, indexed['offset'])))
-        changed += 1
+        db.execute('SAVEPOINT collect_file')
+        try:
+            if row and row['seq'] < 0:
+                row = None               # duplicate copy that changed: decide ownership again
+            fingerprint = db.execute('SELECT hash FROM file_fingerprints WHERE path=?', (key,)).fetchone()
+            digest = prefix_digest(path, row['offset']) if row and stat.st_size >= row['offset'] and fingerprint else None
+            if row and (digest is None or digest.hexdigest() != fingerprint['hash']):
+                forget_file(db, key)     # rewritten or truncated: rebuild from scratch
+                row, digest = None, None
+            if row:
+                verified[key] = (row['offset'], fingerprint['hash'])
+            ingest(db, tool, source, path, stat, row, titles, commit=False)
+            final = path.stat()
+            if (final.st_size, final.st_mtime_ns) != (stat.st_size, stat.st_mtime_ns):
+                raise ValueError('会话正在变化，保留已有索引，稍后重试。')
+            indexed = db.execute('SELECT offset FROM files WHERE path=?', (key,)).fetchone()
+            if indexed:
+                current = prefix_digest(path, indexed['offset'], row['offset'], digest) if row else prefix_digest(path, indexed['offset'])
+                db.execute('INSERT OR REPLACE INTO file_fingerprints VALUES (?,?)', (key, current.hexdigest()))
+            final = path.stat()
+            if (final.st_size, final.st_mtime_ns) != (stat.st_size, stat.st_mtime_ns):
+                raise ValueError('会话在校验期间变化，保留已有索引，稍后重试。')
+            db.execute('RELEASE collect_file')
+            changed += 1
+        except (OSError, ValueError) as error:
+            db.execute('ROLLBACK TO collect_file')
+            db.execute('RELEASE collect_file')
+            verified.pop(key, None)
+            failed.append(index_failure(db, key, 'read', error))
+            unreadable.add(key)
+            continue
         if verbose:
             print(f'indexed {tool}:{source} {path.name}')
     for gone in [r['path'] for r in path_rows(db, 'SELECT path FROM files', only_paths) if r['path'] not in seen]:
@@ -390,10 +455,18 @@ def collect(db, verbose=False, only_paths=None):
         row['path'], row['source'] = row.pop('file_path'), row.pop('file_source')
         if only_paths is not None and row['path'] not in only_paths:
             continue
-        with contextlib.suppress(ValueError, OSError):
-            physical_view(db, row)
+        if row['path'] in unreadable:
+            continue
+        try:
+            physical_view(db, row, _previous=verified.get(row['path']))
+            with db:
+                db.execute('DELETE FROM index_failures WHERE path=?', (row['path'],))
+        except (ValueError, OSError) as error:
+            failed.append(index_failure(db, row['path'], 'search', error))
     refresh_search_index(db, only_paths)
-    return changed
+    performance.record('collection', time.monotonic() - started, files=len(seen), failed=len(failed))
+    performance.flush(DATA)
+    return CollectionResult(changed, failed)
 
 
 def refresh_search_index(db, paths=None):
@@ -409,13 +482,13 @@ def refresh_search_index(db, paths=None):
         db.executemany('INSERT OR IGNORE INTO search_backfill_scope VALUES (?)', [(str(path),) for path in paths])
         condition = ' AND path IN (SELECT path FROM search_backfill_scope)'
     while True:
-        rows = db.execute('SELECT rowid,search_text FROM file_views WHERE rowid NOT IN '
-                          '(SELECT view_rowid FROM file_view_search_coverage)' + condition + ' LIMIT 50').fetchall()
+        rows = db.execute('SELECT rowid,path,search_text FROM file_views WHERE rowid NOT IN '
+                          '(SELECT view_rowid FROM file_view_part_coverage)' + condition + ' LIMIT 50').fetchall()
         if not rows:
             return
         with db:
-            db.executemany('INSERT INTO file_views_fts(rowid,search_text) VALUES (?,?)', rows)
-            db.executemany('INSERT INTO file_view_search_coverage VALUES (?)', [(row[0],) for row in rows])
+            db.executemany('INSERT INTO file_view_parts(path,search_text) VALUES (?,?)', [(row[1], row[2]) for row in rows])
+            db.executemany('INSERT INTO file_view_part_coverage VALUES (?)', [(row[0],) for row in rows])
 
 
 def path_rows(db, query, paths, column='path'):
@@ -441,9 +514,10 @@ def forget_file(db, path):
     db.execute('DELETE FROM files WHERE path=?', (path,))
     db.execute('DELETE FROM file_fingerprints WHERE path=?', (path,))
     db.execute('DELETE FROM file_views WHERE path=?', (path,))
+    db.execute('DELETE FROM index_failures WHERE path=?', (path,))
 
 
-def physical_view(db, row, query=''):
+def physical_view(db, row, query='', *, _previous=None):
     """Cache file-specific metadata/search text; shared native IDs stay separate."""
     import launch_backend as launcher
     stamp = json.dumps(launcher.transcript_stamp(row))
@@ -459,6 +533,9 @@ def physical_view(db, row, query=''):
             value['title'] = row['title']
         return value, bool(query and cached['matched'])
     value = launcher.physical_row(row)
+    from . import read_model
+    if _previous and read_model.append(db, row, value, stamp, _previous):
+        return physical_view(db, row, query)
     messages = launcher.file_messages(value)
     if json.dumps(launcher.transcript_stamp(row)) != stamp:
         raise ValueError('会话正在变化，请稍后刷新。')
@@ -467,10 +544,12 @@ def physical_view(db, row, query=''):
     metadata['message_count'] = len(messages)
     text = '\n'.join(message['text'] for message in messages).casefold()
     with db:
-        db.execute('INSERT INTO file_views VALUES (?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET '
-                   'stamp=excluded.stamp, metadata=excluded.metadata, turns=excluded.turns, '
-                   'search_text=excluded.search_text',
-                   (row['path'], stamp, json.dumps(metadata, ensure_ascii=False), value['turns'], text))
+        fields = (stamp, json.dumps(metadata, ensure_ascii=False), value['turns'], text, row['path'])
+        if db.execute('SELECT 1 FROM file_views WHERE path=?', (row['path'],)).fetchone():
+            db.execute('UPDATE file_views SET stamp=?,metadata=?,turns=?,search_text=? WHERE path=?', fields)
+        else:
+            db.execute('INSERT INTO file_views VALUES (?,?,?,?,?)', (row['path'], *fields[:4]))
+        read_model.checkpoint(db, row)
     return value, bool(query and query.casefold() in text)
 
 
@@ -490,7 +569,7 @@ def refresh_title(db, key, titles):
         db.execute("UPDATE sessions SET title=? WHERE key=? AND title!=?", (titles[sid], key, titles[sid]))
 
 
-def ingest(db, tool, source, path, stat, row, titles):
+def ingest(db, tool, source, path, stat, row, titles, *, commit=True):
     offset, seq, key = (row['offset'], row['seq'], row['session_key']) if row else (0, 0, None)
     parser, meta, pending, last_ts = PARSERS[tool], {}, [], None
     if tool == 'claude':
@@ -498,7 +577,7 @@ def ingest(db, tool, source, path, stat, row, titles):
     elif not row:
         sid = codex_session_id(path)
         if not sid:
-            return
+            raise ValueError('会话头缺失或损坏，保留已有索引，等待文件完整后重试。')
         key = 'codex:' + sid
         owner = db.execute('SELECT s.path, f.size FROM sessions s LEFT JOIN files f ON f.path = s.path '
                            'WHERE s.key=?', (key,)).fetchone()
@@ -507,7 +586,7 @@ def ingest(db, tool, source, path, stat, row, titles):
                 db.execute('INSERT OR REPLACE INTO files VALUES (?,?,?,?,?,?,?,?)',
                            (str(path), tool, source, key, stat.st_size, stat.st_mtime, stat.st_size, -1))
                 return
-            with db:  # this copy is longer (or the old owner is gone): it takes over the session
+            with db if commit else contextlib.nullcontext():  # this longer copy takes over the session
                 db.execute('DELETE FROM messages WHERE session_key=?', (key,))
                 db.execute('DELETE FROM sessions WHERE key=?', (key,))
                 db.execute('UPDATE files SET seq=-1 WHERE path=?', (owner['path'],))
@@ -525,7 +604,7 @@ def ingest(db, tool, source, path, stat, row, titles):
                 _, role, text, ts = event
                 pending.append((role, text, ts, position))
                 last_ts = ts or last_ts
-    with db:
+    with db if commit else contextlib.nullcontext():
         existing = db.execute('SELECT path FROM sessions WHERE key=?', (key,)).fetchone()
         if not existing:
             imported = db.execute('SELECT src_key FROM imports WHERE dst_key=?', (key,)).fetchone()

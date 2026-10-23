@@ -1,5 +1,6 @@
 """Reader behavior for the history window; dependencies are bound per window."""
 import contextlib
+import bisect
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,7 @@ import conversation_store as conversations
 import conversation_titles as titles
 import tool_details
 from history_app.reader_data import MessagePage, checkpoint
+from history_app import performance
 
 
 def create_mixin(bindings, desktop):
@@ -27,6 +29,13 @@ def create_mixin(bindings, desktop):
 
         def load_earlier(self):
             anchor = self.reader_anchor()
+            window = getattr(self, 'reader_window', None)
+            if window:
+                stop = window[0]
+                if stop:
+                    self.reader_window = (max(0, stop - bindings.MESSAGE_LIMIT), stop)
+                    self.show_messages()
+                return
             if getattr(self.reader_messages, 'has_more', False):
                 request = self.reader_request
                 physical, messages, stamp, error = self.reader_cache
@@ -48,7 +57,7 @@ def create_mixin(bindings, desktop):
                     self.reader_cache = physical, merged, stamp, None
                     self.message_limit = len(merged)
                     shifted = (anchor[0] + len(page), *anchor[1:]) if anchor else None
-                    self.show_messages(anchor=(shifted, False))
+                    self.show_messages(anchor=(shifted, False), prepend=len(page))
                 self.background(read, done, label='加载更早消息…', key='reader-page', refresh_preview=False)
                 return
             self.message_limit += bindings.MESSAGE_LIMIT
@@ -63,22 +72,30 @@ def create_mixin(bindings, desktop):
             cancel = lambda: request != self.reader_request
             anchor = self.reader_anchor()
             def read():
-                checkpoint(cancel)
-                if bindings.transcript_stamp(physical) != stamp:
-                    raise ValueError('会话已变化，请刷新后搜索。')
-                result = bindings.file_messages(physical, cancel=cancel)
-                if bindings.transcript_stamp(physical) != stamp:
-                    raise ValueError('会话在读取过程中变化，请刷新后再查看。')
-                return result
+                try:
+                    checkpoint(cancel)
+                    if bindings.transcript_stamp(physical) != stamp:
+                        raise ValueError('会话已变化，请刷新后搜索。')
+                    result = bindings.file_messages(physical, cancel=cancel)
+                    if bindings.transcript_stamp(physical) != stamp:
+                        raise ValueError('会话在读取过程中变化，请刷新后再查看。')
+                    return result
+                except Exception:
+                    if self.reader_full_loading == request:
+                        self.reader_full_loading = None
+                    raise
             def done(result):
                 if cancel():
                     return
                 self.reader_full_loading = None
                 self.reader_messages = result
                 self.reader_cache = physical, result, stamp, None
-                self.reader_total = self.message_limit = len(result)
-                shifted = (anchor[0] + len(result) - len(messages), *anchor[1:]) if anchor else None
-                self.show_messages(anchor=(shifted, False))
+                self.reader_total = len(result)
+                self.rendered_range = (0, 0)
+                self.reader_view = None
+                self.find_status.set('正在定位搜索结果…')
+                self.find_search_key = None
+                self.highlight_matches()
             self.background(read, done, label='搜索完整对话…', key='reader-full', replace=True, refresh_preview=False)
 
         def reader_anchor(self):
@@ -142,28 +159,33 @@ def create_mixin(bindings, desktop):
                     self.render_info.set(str(error))
             return 'break'
 
-        def show_messages(self, position=None, prepared=None, request=None, anchor=None):
+        def show_messages(self, position=None, prepared=None, request=None, anchor=None, prepend=0):
             if request is not None and request != getattr(self, 'render_request', 0):
                 return
             if request is None:
                 cached = getattr(self, 'reader_cache', None)
                 view = (self.current_iid, cached[0]['path'] if cached else None,
                         self.reader_stamp, self.message_limit,
-                        self.preview_mode.get(), self.find_query.get())
+                        self.preview_mode.get(), getattr(self, 'reader_window', None))
                 if view == getattr(self, 'reader_view', None):
                     return
                 self.reader_view = view
                 self.render_request = getattr(self, 'render_request', 0) + 1
             request = self.render_request
             count = len(self.reader_messages)
-            shown = min(count, self.message_limit)
-            more = shown < count or getattr(self.reader_messages, 'has_more', False)
-            large = sum(len(row['text'] or '') for row in self.reader_messages[-shown:]) > 50_000
+            start, stop = getattr(self, 'reader_window', None) or (max(0, count - self.message_limit), count)
+            if prepend:
+                start, stop = 0, prepend
+            shown = min(count, stop - start)
+            more = (shown < count and not prepend) or getattr(self.reader_messages, 'has_more', False)
+            if getattr(self, 'reader_window', None) and not prepend:
+                more = start > 0
+            large = sum(len(row['text'] or '') for row in self.reader_messages[start:stop]) > 50_000
             if large and prepared is None and self.preview_mode.get() == 'Markdown':
                 messages = list(self.reader_messages)
                 def prepare():
                     result, highlights = {}, {}
-                    for index in range(count - shown, count):
+                    for index in range(start, stop):
                         checkpoint(lambda: request != self.render_request)
                         row = messages[index]
                         if row['role'] in ('user', 'assistant', 'agent'):
@@ -174,28 +196,58 @@ def create_mixin(bindings, desktop):
                                     key = (element.text, element.language)
                                     highlights[key] = tuple(markdown.highlighted(*key))
                     return result, highlights
-                self.background(prepare, lambda result: self.show_messages(position, result, request, anchor),
-                                label='准备对话排版…', refresh_preview=False)
+                self.background(prepare, lambda result: self.show_messages(position, result, request, anchor, prepend),
+                                label='准备对话排版…', key='markdown', replace=True, refresh_preview=False)
                 return
             total = getattr(self, 'reader_total', None) or (None if more else count)
-            label = f'{shown} / {total}' if total is not None else str(shown)
+            displayed = count if prepend else shown
+            label = f'{displayed} / {total}' if total is not None else str(displayed)
+            if getattr(self, 'reader_window', None):
+                label += f' · 第 {start + 1}–{stop} 条'
             self.message_count.set(f'已显示 {label} 条消息 · 工具可展开详情')
             self.more_messages.state(['!disabled'] if more else ['disabled'])
-            self.begin_text()
-            if more:
+            self.rendering = True
+            started = time.monotonic()
+            self.rendered_range = (0, count) if prepend else (start, stop)
+            if prepend:
+                self.text.configure(state='normal')
+                old_marks = list(self.message_marks)
+                if old_marks:
+                    self.text.delete('1.0', old_marks[0][1])
+                for index, name in reversed(old_marks):
+                    temporary = 'old_' + name
+                    self.text.mark_set(temporary, name)
+                    self.text.mark_unset(name)
+                self.message_marks = []
+                for index, name in old_marks:
+                    renamed = f'message_{index + prepend}'
+                    self.text.mark_set(renamed, 'old_' + name)
+                    self.text.mark_gravity(renamed, 'right')
+                    self.text.mark_unset('old_' + name)
+                    self.message_marks.append((index + prepend, renamed))
+                renamed_marks = {name: f'message_{index + prepend}' for index, name in old_marks}
+                for panel in self.tool_panels:
+                    panel.mark = renamed_marks.get(panel.mark, panel.mark)
+                self.text.mark_set('reader_insert', '1.0')
+                self.text.mark_gravity('reader_insert', 'right')
+            else:
+                self.begin_text()
+            self.markdown_renderer.index = 'reader_insert' if prepend else 'end'
+            if more and not prepend:
                 self.text.insert('end', f'（显示最近 {shown} 条；可加载更早消息）\n\n', 'note')
-            groups = tool_details.groups(self.reader_messages[count - shown:])
+            groups = tool_details.groups(self.reader_messages[start:stop])
+            destination = 'reader_insert' if prepend else 'end'
             def render():
-                for index in range(count - shown, count):
+                for index in range(start, stop):
                     row = self.reader_messages[index]
                     mark = f'message_{index}'
-                    self.text.mark_set(mark, 'end-1c')
+                    self.text.mark_set(mark, destination if prepend else 'end-1c')
                     self.text.mark_gravity(mark, 'left')
                     self.message_marks.append((index, mark))
                     if row['role'] in ('tool_call', 'tool_output') and self.preview_mode.get() == 'Markdown':
-                        paired = groups.get(index - (count - shown))
+                        paired = groups.get(index - start)
                         if paired is not None:
-                            rows = [self.reader_messages[number + count - shown] for number in paired]
+                            rows = [self.reader_messages[number + start] for number in paired]
                             locator = row.get('detail', {})
                             key = str((locator.get('path') or self.current_iid,
                                        locator.get('offset', locator.get('ordinal', index)), row['role'], locator.get('block')))
@@ -203,8 +255,8 @@ def create_mixin(bindings, desktop):
                             panel.mark = mark
                             self.tool_panels.append(panel)
                             self.markdown_renderer.widgets.append(panel.frame)
-                            self.text.window_create('end', window=panel.frame, padx=4, pady=2)
-                            self.text.insert('end', '\n', 'body')
+                            self.text.window_create(destination, window=panel.frame, padx=4, pady=2)
+                            self.text.insert(destination, '\n', 'body')
                     else:
                         for tag, chunk in bindings.render_messages([row], None):
                             if tag == 'body' and self.preview_mode.get() == 'Markdown':
@@ -216,7 +268,7 @@ def create_mixin(bindings, desktop):
                             else:
                                 if self.preview_mode.get() == 'Markdown' and tag.startswith('head_'):
                                     chunk = chunk.lstrip('\n')
-                                self.text.insert('end', chunk, tag)
+                                self.text.insert(destination, chunk, tag)
                     yield
                 if not count:
                     self.text.insert('end', '这条对话没有可显示的文字', 'empty')
@@ -235,12 +287,34 @@ def create_mixin(bindings, desktop):
                             self.root.after(1, batch)
                             return
                 except StopIteration:
+                    self.rendering = False
+                    self.message_marks.sort()
+                    for _, name in self.message_marks:
+                        self.text.mark_gravity(name, 'left')
+                    self.markdown_renderer.index = 'end'
+                    performance.record('render', time.monotonic() - started, messages=shown)
                     self.end_text(position)
                     if anchor:
                         self.restore_reader_anchor(*anchor)
-                    if self.search_text() and self.find_query.get():
-                        self.find_message(1)
             batch()
+
+        def schedule_find(self):
+            if getattr(self, 'setting_find_query', False):
+                return
+            previous = getattr(self, 'find_after', None)
+            if previous:
+                self.root.after_cancel(previous)
+            self.find_request = getattr(self, 'find_request', 0) + 1
+            self.find_search_key = None
+            self.find_targets, self.find_totals = [], []
+            if not self.find_query.get():
+                self.highlight_matches()
+            else:
+                self.find_status.set('正在查找…')
+                def find():
+                    self.find_after = None
+                    self.highlight_matches()
+                self.find_after = self.root.after(150, find)
 
         def highlight_matches(self):
             if getattr(self, 'setting_find_query', False):
@@ -253,28 +327,63 @@ def create_mixin(bindings, desktop):
                 self.find_status.set('正在搜索完整对话…')
                 self.load_full_reader()
                 return
-            if query and self.message_limit < len(self.reader_messages):
-                self.message_limit = len(self.reader_messages)
-                self.show_messages(self.text.index('@0,0'))
-                return
             if not query:
                 self.find_status.set('Ctrl+F 搜索此对话')
+                self.find_targets, self.find_totals = [], []
+                return
+            key = (self.reader_request, query, len(self.reader_messages))
+            if key != getattr(self, 'find_search_key', None):
+                self.find_search_key = key
+                request = getattr(self, 'find_request', 0)
+                messages = tuple(self.reader_messages)
+                cancel = lambda: request != getattr(self, 'find_request', 0) or key != self.find_search_key
+                def search():
+                    targets, totals, total = [], [], 0
+                    for index, row in enumerate(messages):
+                        checkpoint(cancel)
+                        count = (row['text'] or '').casefold().count(query.casefold())
+                        if count:
+                            total += count
+                            targets.append(index)
+                            totals.append(total)
+                    return targets, totals
+                def done(result):
+                    if cancel():
+                        return
+                    self.find_targets, self.find_totals = result
+                    self.find_global_index = -1
+                    if self.find_targets:
+                        self.find_message(1)
+                    else:
+                        self.find_status.set('0 处')
+                self.background(search, done, label='定位搜索结果…', key='reader-search', replace=True, refresh_preview=False)
+                return
+            if getattr(self, 'rendering', False):
                 return
             start = '1.0'
             count = tk.IntVar()
-            while True:
-                match = self.text.search(query, start, stopindex='end', nocase=True, exact=True, count=count)
-                if not match:
-                    break
-                end = self.text.index(f'{match}+{count.get()}c')
-                self.find_matches.append((match, end))
-                self.text.tag_add('find', match, end)
-                start = end
+            render_request = self.render_request
+            def scan(start):
+                if key != self.find_search_key or render_request != self.render_request:
+                    return
+                for _ in range(100):
+                    match = self.text.search(query, start, stopindex='end', nocase=True, exact=True, count=count)
+                    if not match:
+                        self.finish_find()
+                        return
+                    end = self.text.index(f'{match}+{count.get()}c')
+                    self.find_matches.append((match, end))
+                    self.text.tag_add('find', match, end)
+                    start = end
+                self.root.after(1, lambda: scan(start))
+            scan(start)
             tools = []
             for panel in getattr(self, 'tool_panels', []):
                 if any(query.casefold() in row['text'].casefold() for row in panel.rows):
                     if not panel.expanded:
                         panel.toggle()
+                    if panel.loaded:
+                        panel.highlight()
                     tools.append(panel)
             if tools and not self.find_matches:
                 panel = tools[0]
@@ -284,10 +393,52 @@ def create_mixin(bindings, desktop):
                 self.root.after_idle(locate)
                 self.find_status.set(f'{len(tools)} 个工具详情匹配（展开读取完整记录）')
                 return
-            self.find_status.set(f'{len(self.find_matches)} 处' +
-                                 (' · 当前已加载内容' if len(self.reader_messages) > self.message_limit else ''))
+        def finish_find(self):
+            total = self.find_totals[-1] if getattr(self, 'find_totals', None) else len(self.find_matches)
+            self.find_status.set(f'{total} 处')
+            if getattr(self, 'pending_find', False):
+                self.pending_find = False
+                self.locate_find()
+
+        def locate_find(self):
+            if not getattr(self, 'find_targets', None):
+                return
+            target = bisect.bisect_right(self.find_totals, self.find_global_index)
+            index = self.find_targets[target]
+            mark = next((name for number, name in self.message_marks if number == index), None)
+            if not mark:
+                return
+            following = next((name for number, name in self.message_marks if number > index), 'end-1c')
+            matches = [(start, end) for start, end in self.find_matches
+                       if self.text.compare(start, '>=', mark) and self.text.compare(start, '<', following)]
+            occurrence = self.find_global_index - (self.find_totals[target - 1] if target else 0)
+            self.text.tag_remove('find_current', '1.0', 'end')
+            if matches:
+                start, end = matches[min(occurrence, len(matches) - 1)]
+                self.text.tag_add('find_current', start, end)
+                self.text.see(start)
+            else:
+                self.text.see(mark)
+            self.find_status.set(f'{self.find_global_index + 1} / {self.find_totals[-1]}')
 
         def find_message(self, direction):
+            if getattr(self, 'find_totals', None):
+                total = self.find_totals[-1]
+                self.find_global_index = (getattr(self, 'find_global_index', -1) + direction) % total
+                target = self.find_targets[bisect.bisect_right(self.find_totals, self.find_global_index)]
+                start, stop = getattr(self, 'rendered_range', (0, 0))
+                self.pending_find = True
+                if not start <= target < stop:
+                    start = max(0, min(target - bindings.MESSAGE_LIMIT // 2,
+                                       len(self.reader_messages) - bindings.MESSAGE_LIMIT))
+                    self.reader_window = (start, min(len(self.reader_messages), start + bindings.MESSAGE_LIMIT))
+                    self.find_status.set('正在显示搜索结果…')
+                    self.show_messages()
+                elif getattr(self, 'rendering', False):
+                    return
+                else:
+                    self.highlight_matches()
+                return
             if not getattr(self, 'find_matches', None):
                 return
             self.find_index = (self.find_index + direction) % len(self.find_matches) if self.find_index >= 0 else \
@@ -303,6 +454,10 @@ def create_mixin(bindings, desktop):
                 return
             if request is None:
                 self.reader_request = getattr(self, 'reader_request', 0) + 1
+                self.find_search_key = None
+                self.reader_window = None
+                self.render_request = getattr(self, 'render_request', 0) + 1
+                self.rendering = False
             read_request = self.reader_request
             cancel = lambda: read_request != self.reader_request
             read_query = self.search_text()
@@ -342,24 +497,25 @@ def create_mixin(bindings, desktop):
                         return physical, messages, stamp, None
                     except (ValueError, OSError) as error:
                         return r, [], None, error
-                stamp = bindings.transcript_stamp(r)
-                size = sum(entry[1] for entry in json.loads(stamp)) if isinstance(stamp, str) else stamp[0]
                 if loaded is None:
                     cached = getattr(self, 'reader_cache', None)
-                    if cached and cached[0]['path'] == r['path'] and cached[2] == stamp:
-                        loaded = (bindings.physical_row(r), *cached[1:])
-                    elif size > 1024 * 1024:
-                        self.reader_stamp = None
-                        self.title_var.set(r['title'] or r['id'])
-                        self.set_text([('note', '正在读取对话…')])
-                        self.launch_button.state(['disabled'])
-                        self.copy_button.state(['disabled'])
-                        request = self.reader_request
-                        self.background(read, lambda result: self.on_select(result, request),
-                                        label='读取对话…')
-                        return
-                    else:
-                        loaded = read()
+                    def cached_read():
+                        checkpoint(cancel)
+                        try:
+                            stamp = bindings.transcript_stamp(r)
+                            if cached and cached[0]['path'] == r['path'] and cached[2] == stamp:
+                                return (bindings.physical_row(r), *cached[1:])
+                            return read()
+                        except (ValueError, OSError) as error:
+                            return r, [], None, error
+                    self.reader_stamp = None
+                    self.title_var.set(r['title'] or r['id'])
+                    self.launch_button.state(['disabled'])
+                    self.copy_button.state(['disabled'])
+                    request = self.reader_request
+                    self.background(cached_read, lambda result: self.on_select(result, request),
+                                    label='读取对话…', key='reader', replace=True, refresh_preview=False)
+                    return
                 r, messages, stamp, error = loaded
                 if error:
                     raise error
@@ -389,26 +545,7 @@ def create_mixin(bindings, desktop):
                 r['turns'] = sum(message['role'] == 'user' for message in messages)
             if not getattr(self, 'version_override', None):
                 self.rows[iid] = r
-            with contextlib.closing(ah.connect()) as db:
-                r = titles.apply(db, r)
-                member = conversations.lookup(db, r)
-                self.version_options = {}
-                if member:
-                    heads = {item['id'] for item in conversations.tips(db, member['conversation'])}
-                    members = conversations.members(db, member['conversation'])
-                    for item in members:
-                        version_row = json.loads(item['row_json'])
-                        kind = '接续版本' if item['parent_revision'] else '原会话'
-                        if version_row.get('kind') == 'import':
-                            kind = '已续聊副本' if item['baseline'] and item['head'] != item['baseline'] else '导入副本'
-                        state = '并行分支' if item['id'] in heads and len(heads) > 1 else \
-                                '当前版本' if item['id'] in heads else '历史版本'
-                        label = version_row['source'] + ' / ' + version_row['id'][:13] + ' / ' + kind + ' / ' + state
-                        self.version_options[label] = version_row
-                        if item['id'] == member['id']:
-                            self.version_value.set(label)
-                self.version_box['values'] = list(self.version_options)
-                origin = bindings.original_of(db, r)
+            self.load_selection_metadata(r, read_request)
             default = support.preferred_target(r, list(self.target_labels), self.preferences)
             self.title_var.set(r['title'] or '(无标题)')
             lines = [f"{r['tool']} · {r['source']} · {r['turns']} 轮",
@@ -417,10 +554,6 @@ def create_mixin(bindings, desktop):
                 lines.append('模型：' + r['model'])
             if bindings.KIND_LABELS.get(r['kind']):
                 lines.append('会话类型：' + bindings.KIND_LABELS[r['kind']])
-            if member:
-                lines.append(f'版本：{len(members)} 个 · 分支：{len(heads)} 个')
-            if origin is not r:
-                lines.append(f"导入自 {origin['tool']} · {origin['source']} · {origin['id'][:13]}")
             reason = self.candidates.get(str(Path(r['path'])))
             if reason:
                 lines.append('清理建议：' + reason)
@@ -434,25 +567,59 @@ def create_mixin(bindings, desktop):
                     self.find_query.set(query)
                 finally:
                     self.setting_find_query = False
-                self.message_limit = len(messages)
             self.show_messages(position)
+            if matched:
+                self.highlight_matches()
             target = previous_target if same and previous_target in self.target_labels else default
             cwd = previous_cwd if same else (r['cwd'] or '')
-            with contextlib.closing(ah.connect()) as db:
-                for candidate in dict.fromkeys([target, r['source'], *self.target_labels]):
-                    if candidate not in self.target_labels:
-                        continue
-                    try:
-                        bindings.launch_plan(db, r, candidate, cwd)
-                    except (ValueError, OSError):
-                        continue
-                    target = candidate
-                    break
+            self.choose_preview_target = not same
             self.target.set(self.target_labels.get(target, ''))
             self.cwd.set(cwd)
             self.update_preview()
-            if matched:
-                self.find_message(1)
+
+        def load_selection_metadata(self, row, request):
+            cancel = lambda: request != self.reader_request
+            self.version_options = {}
+            self.version_box['values'] = []
+            def work():
+                checkpoint(cancel)
+                with contextlib.closing(ah.connect()) as db:
+                    titled = titles.apply(db, row)
+                    member = conversations.lookup(db, titled)
+                    options, selected, heads, members = {}, '', set(), []
+                    if member:
+                        members = conversations.members(db, member['conversation'])
+                        heads = {item['id'] for item in conversations.tips(db, member['conversation'], _items=members)}
+                        for item in members:
+                            checkpoint(cancel)
+                            version_row = json.loads(item['row_json'])
+                            kind = '接续版本' if item['parent_revision'] else '原会话'
+                            if version_row.get('kind') == 'import':
+                                kind = '已续聊副本' if item['baseline'] and item['head'] != item['baseline'] else '导入副本'
+                            state = '并行分支' if item['id'] in heads and len(heads) > 1 else \
+                                    '当前版本' if item['id'] in heads else '历史版本'
+                            label = version_row['source'] + ' / ' + version_row['id'][:13] + ' / ' + kind + ' / ' + state
+                            options[label] = version_row
+                            if item['id'] == member['id']:
+                                selected = label
+                    origin = bindings.original_of(db, titled)
+                    extra = [f'版本：{len(members)} 个 · 分支：{len(heads)} 个'] if member else []
+                    failure = db.execute('SELECT stage,error FROM index_failures WHERE path=?', (row['path'],)).fetchone()
+                    if failure:
+                        extra.append('索引待重试：' + failure['error'])
+                    if origin is not titled:
+                        extra.append(f"导入自 {origin['tool']} · {origin['source']} · {origin['id'][:13]}")
+                    return titled, options, selected, extra
+            def done(result):
+                if cancel():
+                    return
+                titled, self.version_options, selected, extra = result
+                self.title_var.set(titled['title'] or '(无标题)')
+                self.version_box['values'] = list(self.version_options)
+                self.version_value.set(selected)
+                if extra:
+                    self.info.set(self.info.get() + '\n' + '\n'.join(extra))
+            self.background(work, done, label='读取版本信息…', key='selection-details', replace=True, refresh_preview=False)
 
         def select_version(self, _event=None):
             row = self.version_options.get(self.version_value.get())
