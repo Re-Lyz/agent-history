@@ -12,6 +12,7 @@ import markdown_preview as markdown
 import conversation_store as conversations
 import conversation_titles as titles
 import tool_details
+from history_app.reader_data import MessagePage, checkpoint
 
 
 def create_mixin(bindings, desktop):
@@ -26,8 +27,59 @@ def create_mixin(bindings, desktop):
 
         def load_earlier(self):
             anchor = self.reader_anchor()
+            if getattr(self.reader_messages, 'has_more', False):
+                request = self.reader_request
+                physical, messages, stamp, error = self.reader_cache
+                cancel = lambda: request != self.reader_request
+                def read():
+                    checkpoint(cancel)
+                    if bindings.transcript_stamp(physical) != stamp:
+                        raise ValueError('会话已变化，请刷新后加载更早消息。')
+                    page = bindings.file_message_page(physical, bindings.MESSAGE_LIMIT,
+                                                      cursor=messages.cursor, cancel=cancel)
+                    if bindings.transcript_stamp(physical) != stamp:
+                        raise ValueError('会话在读取过程中变化，请刷新后再查看。')
+                    return page
+                def done(page):
+                    if cancel():
+                        return
+                    merged = MessagePage([*page, *messages], page.cursor)
+                    self.reader_messages = merged
+                    self.reader_cache = physical, merged, stamp, None
+                    self.message_limit = len(merged)
+                    shifted = (anchor[0] + len(page), *anchor[1:]) if anchor else None
+                    self.show_messages(anchor=(shifted, False))
+                self.background(read, done, label='加载更早消息…', key='reader-page', refresh_preview=False)
+                return
             self.message_limit += bindings.MESSAGE_LIMIT
             self.show_messages(anchor=(anchor, False))
+
+        def load_full_reader(self):
+            request = self.reader_request
+            if getattr(self, 'reader_full_loading', None) == request:
+                return
+            self.reader_full_loading = request
+            physical, messages, stamp, error = self.reader_cache
+            cancel = lambda: request != self.reader_request
+            anchor = self.reader_anchor()
+            def read():
+                checkpoint(cancel)
+                if bindings.transcript_stamp(physical) != stamp:
+                    raise ValueError('会话已变化，请刷新后搜索。')
+                result = bindings.file_messages(physical, cancel=cancel)
+                if bindings.transcript_stamp(physical) != stamp:
+                    raise ValueError('会话在读取过程中变化，请刷新后再查看。')
+                return result
+            def done(result):
+                if cancel():
+                    return
+                self.reader_full_loading = None
+                self.reader_messages = result
+                self.reader_cache = physical, result, stamp, None
+                self.reader_total = self.message_limit = len(result)
+                shifted = (anchor[0] + len(result) - len(messages), *anchor[1:]) if anchor else None
+                self.show_messages(anchor=(shifted, False))
+            self.background(read, done, label='搜索完整对话…', key='reader-full', replace=True, refresh_preview=False)
 
         def reader_anchor(self):
             top = self.text.index('@0,0')
@@ -105,12 +157,14 @@ def create_mixin(bindings, desktop):
             request = self.render_request
             count = len(self.reader_messages)
             shown = min(count, self.message_limit)
+            more = shown < count or getattr(self.reader_messages, 'has_more', False)
             large = sum(len(row['text'] or '') for row in self.reader_messages[-shown:]) > 50_000
             if large and prepared is None and self.preview_mode.get() == 'Markdown':
                 messages = list(self.reader_messages)
                 def prepare():
                     result, highlights = {}, {}
                     for index in range(count - shown, count):
+                        checkpoint(lambda: request != self.render_request)
                         row = messages[index]
                         if row['role'] in ('user', 'assistant', 'agent'):
                             elements = markdown.parse(row['text'] or '')
@@ -123,11 +177,13 @@ def create_mixin(bindings, desktop):
                 self.background(prepare, lambda result: self.show_messages(position, result, request, anchor),
                                 label='准备对话排版…', refresh_preview=False)
                 return
-            self.message_count.set(f'已显示 {shown} / {count} 条消息 · 工具可展开详情')
-            self.more_messages.state(['!disabled'] if shown < count else ['disabled'])
+            total = getattr(self, 'reader_total', None) or (None if more else count)
+            label = f'{shown} / {total}' if total is not None else str(shown)
+            self.message_count.set(f'已显示 {label} 条消息 · 工具可展开详情')
+            self.more_messages.state(['!disabled'] if more else ['disabled'])
             self.begin_text()
-            if shown < count:
-                self.text.insert('end', f'（仅显示最近 {shown} 条，共 {count} 条；可加载更早消息）\n\n', 'note')
+            if more:
+                self.text.insert('end', f'（显示最近 {shown} 条；可加载更早消息）\n\n', 'note')
             groups = tool_details.groups(self.reader_messages[count - shown:])
             def render():
                 for index in range(count - shown, count):
@@ -141,7 +197,8 @@ def create_mixin(bindings, desktop):
                         if paired is not None:
                             rows = [self.reader_messages[number + count - shown] for number in paired]
                             locator = row.get('detail', {})
-                            key = str((locator.get('path') or self.current_iid, locator.get('ordinal', index), row['role']))
+                            key = str((locator.get('path') or self.current_iid,
+                                       locator.get('offset', locator.get('ordinal', index)), row['role'], locator.get('block')))
                             panel = bindings.ToolPanel(self, rows, key, self.tool_states, P)
                             panel.mark = mark
                             self.tool_panels.append(panel)
@@ -192,6 +249,10 @@ def create_mixin(bindings, desktop):
             self.text.tag_remove('find_current', '1.0', 'end')
             self.find_matches, self.find_index = [], -1
             query = self.find_query.get()
+            if query and getattr(self.reader_messages, 'has_more', False):
+                self.find_status.set('正在搜索完整对话…')
+                self.load_full_reader()
+                return
             if query and self.message_limit < len(self.reader_messages):
                 self.message_limit = len(self.reader_messages)
                 self.show_messages(self.text.index('@0,0'))
@@ -242,6 +303,9 @@ def create_mixin(bindings, desktop):
                 return
             if request is None:
                 self.reader_request = getattr(self, 'reader_request', 0) + 1
+            read_request = self.reader_request
+            cancel = lambda: read_request != self.reader_request
+            read_query = self.search_text()
             if self.tree.selection() and getattr(self, 'version_iid', None) != self.tree.selection()[0]:
                 self.version_override = None
             rows = self.selected()
@@ -271,7 +335,8 @@ def create_mixin(bindings, desktop):
                     try:
                         physical = bindings.physical_row(r)
                         stamp = bindings.transcript_stamp(physical)
-                        messages = bindings.file_messages(physical)
+                        messages = bindings.file_messages(physical, cancel=cancel) if read_query else \
+                            bindings.file_message_page(physical, bindings.MESSAGE_LIMIT, cancel=cancel)
                         if stamp != bindings.transcript_stamp(physical):
                             raise ValueError('会话在读取过程中变化，请刷新后再查看。')
                         return physical, messages, stamp, None
@@ -313,11 +378,15 @@ def create_mixin(bindings, desktop):
                 self.target_menu.delete(0, 'end')
                 return
             self.reader_cache = loaded
+            self.reader_full_loading = None
             self.current_iid = iid
             if not same:
                 self.message_limit = bindings.MESSAGE_LIMIT
             self.reader_messages, self.reader_stamp = messages, stamp
-            r['turns'] = sum(message['role'] == 'user' for message in messages)
+            self.reader_total = r.get('message_count') if r.get('view_stamp') == json.dumps(stamp) else None
+            if not getattr(messages, 'has_more', False):
+                self.reader_total = len(messages)
+                r['turns'] = sum(message['role'] == 'user' for message in messages)
             if not getattr(self, 'version_override', None):
                 self.rows[iid] = r
             with contextlib.closing(ah.connect()) as db:

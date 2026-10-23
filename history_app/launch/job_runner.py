@@ -6,6 +6,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 
 import agent_history as ah
 import launch_jobs as jobs
@@ -68,6 +69,49 @@ def checked_inner(inner):
     return ['-EncodedCommand', base64.b64encode(script.encode('utf-16le')).decode('ascii')]
 
 
+def sync_exit(identity):
+    """Retry only transient native locks after confirmed successful Agent exit.
+
+    Release the collector lock between attempts. Never rerun the Agent or
+    convert an interrupted/failed exit into permission to clean old files.
+    """
+    import contextlib
+    import conversation_store
+    import handoff_lifecycle
+    import single_conversation
+    for delay in (0, .25, .75, 1.5):
+        if delay:
+            time.sleep(delay)
+        try:
+            jobs.update(identity, sync_stage='waiting-collector')
+            with ah.collect_lock(wait=True) as locked:
+                if not locked:
+                    raise TimeoutError('History collector is busy.')
+                with contextlib.closing(ah.connect()) as db:
+                    jobs.update(identity, sync_stage='checking-content')
+                    if handoff_lifecycle.get(db, identity):
+                        handoff_lifecycle.finish(db, identity)
+                    elif jobs.read(identity).get('single_head'):
+                        single_conversation.finish(db, identity)
+                    else:
+                        # New/unowned launches still need full discovery.
+                        jobs.update(identity, sync_stage='indexing')
+                        ah.collect(db)
+                        report = conversation_store.sync_all(db)
+                        job = jobs.read(identity)
+                        if job['source_path'] in report.get('skipped', []):
+                            raise ValueError('当前历史来源已停用，重新接入后可重试采集。')
+                        if jobs.collection_failed(job, report):
+                            raise ValueError('当前会话读取失败，请检查历史来源。')
+                        jobs.update(identity, sync_state='collected', sync_error='')
+            return
+        except handoff_lifecycle.SessionBusyError:
+            jobs.update(identity, sync_stage='waiting-native-lock')
+            report = jobs.read(identity)
+            if delay == 1.5 or report['state'] != 'exited' or report.get('exit_code') != 0:
+                raise
+
+
 def run(identity, inner):
     code = 1
     claimed = False
@@ -106,28 +150,7 @@ def run(identity, inner):
                 jobs.update(identity, sync_state='failed', sync_error='启动未获得独占权；请查看最新主对话和启动记录。')
             return code
         try:
-            import conversation_store
-            with ah.collect_lock(wait=True) as locked:
-                if not locked:
-                    raise TimeoutError('History collector is busy.')
-                import contextlib
-                with contextlib.closing(ah.connect()) as db:
-                    ah.collect(db)
-                    import handoff_lifecycle
-                    if handoff_lifecycle.get(db, identity):
-                        # finish verifies the owned origin/temporary/durable
-                        # revisions directly; unrelated sync is independent.
-                        handoff_lifecycle.finish(db, identity)
-                    elif jobs.read(identity).get('single_head'):
-                        single_conversation.finish(db, identity)
-                    else:
-                        report = conversation_store.sync_all(db)
-                        job = jobs.read(identity)
-                        if job['source_path'] in report.get('skipped', []):
-                            raise ValueError('当前历史来源已停用，重新接入后可重试采集。')
-                        if jobs.collection_failed(job, report):
-                            raise ValueError('当前会话读取失败，请检查历史来源。')
-                        jobs.update(identity, sync_state='collected', sync_error='')
+            sync_exit(identity)
         except Exception as error:
             owned = {'handoff_state': 'pending'} if jobs.read(identity).get('handoff_state') else {}
             jobs.update(identity, sync_state='failed', **owned,

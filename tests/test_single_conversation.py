@@ -25,6 +25,47 @@ from tests import test_conversation_store as conversation_tests
 class SingleConversationTests(Fixture):
     text = conversation_tests.ConversationTests.text
 
+    def test_same_connection_exit_does_not_walk_or_index_unrelated_histories(self):
+        original = dict(ah.resolve(self.db, 's1'))
+        other = self.a / 'sessions' / 'unrelated.jsonl'
+        other.write_text(rollout('unrelated', 'old content', self.cwd), encoding='utf-8')
+        ah.collect(self.db)
+        prepared = backend.prepare_launch(self.db, original, 'a', self.cwd)
+        jobs.update(prepared['job'], state='exited', exit_code=0)
+        other.write_text(rollout('unrelated', 'new content', self.cwd), encoding='utf-8')
+        with patch.object(trash, 'fork_index', side_effect=AssertionError('No files are being retired')), \
+                patch.object(Path, 'rglob', side_effect=AssertionError('Unrelated directory walk')), \
+                patch.object(Path, 'glob', side_effect=AssertionError('Unrelated directory walk')):
+            single.finish(self.db, prepared['job'])
+        self.assertEqual(jobs.read(prepared['job'])['sync_state'], 'collected')
+        self.assertEqual([r['text'] for r in ah.messages(self.db, 'codex:unrelated')], ['old content'])
+
+    def test_completion_waits_for_affected_index_and_keeps_reservation_when_indexing_fails(self):
+        prepared, current = self.prepare()
+        jobs.update(prepared['job'], state='exited', exit_code=0)
+        with patch.object(ah, 'collect', side_effect=OSError('synthetic index failure')):
+            with self.assertRaises(OSError):
+                single.finish(self.db, prepared['job'])
+        self.assertNotEqual(jobs.read(prepared['job'])['sync_state'], 'collected')
+        self.assertNotEqual(lifecycle.get(self.db, prepared['job'])['state'], 'cleaned')
+        self.assertIsNotNone(self.db.execute('SELECT job FROM conversation_runs WHERE job=?', (prepared['job'],)).fetchone())
+        self.assertTrue(Path(current['path']).is_file())
+        single.finish(self.db, prepared['job'], manual=True)
+        self.assertEqual(jobs.read(prepared['job'])['sync_state'], 'collected')
+        self.assertIsNone(self.db.execute('SELECT job FROM conversation_runs WHERE job=?', (prepared['job'],)).fetchone())
+        self.assertEqual(ah.resolve(self.db, current['id'])['path'], current['path'])
+
+    def test_retirement_reindexes_existing_same_id_copies_in_other_connections(self):
+        duplicate = self.b / 'sessions' / 'independent-copy.jsonl'
+        duplicate.write_bytes(self.path.read_bytes())
+        ah.collect(self.db)
+        prepared, current = self.prepare()
+        self.finish(prepared)
+        self.assertFalse(self.path.exists())
+        self.assertTrue(duplicate.is_file())
+        self.assertEqual(ah.resolve(self.db, 's1')['path'], str(duplicate))
+        self.assertEqual(ah.resolve(self.db, current['id'])['path'], current['path'])
+
     def add(self, row, question, answer='新回答'):
         if row['tool'] == 'codex':
             return conversation_tests.ConversationTests.add(self, row, question, answer)

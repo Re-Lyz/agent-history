@@ -3,6 +3,10 @@ import datetime
 import json
 import os
 from pathlib import Path
+import copy
+import threading
+import time
+from collections import OrderedDict
 import uuid
 
 import agent_history as ah
@@ -52,19 +56,69 @@ def update(identity, expected_state=None, expected_fields=None, **fields):
                 (expected_fields is None or all(item.get(key) == value for key, value in expected_fields.items())):
             if 'pid' in fields and 'pid_started' not in fields:
                 fields['pid_started'] = process_started(fields['pid'])
+            if fields.get('sync_state') == 'collected':
+                fields.setdefault('sync_stage', 'complete')
+                fields.setdefault('sync_finished', now())
             item.update(fields, updated=now())
             atomic_json(path(identity), item)
         return item
 
 
 def reports(limit=25):
-    result = []
-    for file in sorted((ah.DATA / 'launch-jobs').glob('*.json'), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]:
+    return report_catalog(limit)
+
+
+_catalogs = OrderedDict()
+_catalog_lock = threading.RLock()
+
+
+def outstanding(item):
+    return item['state'] in ('prepared', 'running') or item.get('sync_state') not in ('collected', 'not-needed')
+
+
+def report_catalog(limit=25, *, active_only=False):
+    """Watch pending reports; reuse finished ones until directory changes.
+
+    Atomic publication changes the directory stamp. Periodic full validation
+    also detects older runners that overwrite existing reports in place.
+    """
+    folder = ah.DATA / 'launch-jobs'
+    with _catalog_lock:
         try:
-            result.append(read(file.stem))
-        except (OSError, ValueError):
-            continue
-    return result
+            stamp = folder.stat().st_mtime_ns
+        except OSError:
+            _catalogs.pop(folder, None)
+            return []
+        catalog = _catalogs.setdefault(folder, dict(stamp=None, checked=0, entries={}))
+        entries = catalog['entries']
+        full = stamp != catalog['stamp'] or time.monotonic() - catalog['checked'] >= 5
+        files = list(folder.glob('*.json')) if full else [file for file, (_, item) in entries.items() if outstanding(item)]
+        if full:
+            present = set(files)
+            for file in set(entries) - present:
+                del entries[file]
+            catalog.update(stamp=stamp, checked=time.monotonic())
+        for file in files:
+            try:
+                stat = file.stat()
+                signature = (stat.st_mtime_ns, stat.st_size, stat.st_ctime_ns)
+                if file not in entries or entries[file][0] != signature:
+                    item = read(file.stem, wait=False)
+                    final = file.stat()
+                    if signature != (final.st_mtime_ns, final.st_size, final.st_ctime_ns):
+                        catalog['stamp'] = None
+                        continue
+                    entries[file] = (signature, item)
+            except (OSError, ValueError, TimeoutError):
+                entries.pop(file, None)
+                catalog['stamp'] = None
+                continue
+        values = sorted(entries.values(), key=lambda entry: entry[0][0], reverse=True)
+        result = [copy.deepcopy(item) for _, item in values if not active_only or outstanding(item)]
+        _catalogs.move_to_end(folder)
+        while len(_catalogs) > 8:
+            _catalogs.popitem(last=False)
+        return result if limit is None else result[:limit]
 
 
 def describe(item):
@@ -76,11 +130,18 @@ def describe(item):
         text += ' · 退出码 ' + str(item['exit_code'])
     if item.get('error'):
         text += '\n' + item['error']
+    stages = {'waiting-collector': '正在等待历史同步任务完成', 'checking-content': '正在校验已保存的对话内容',
+              'verifying-native': '正在验证原生对话可恢复', 'retiring-covered': '正在回收已被完整覆盖的旧版本',
+              'indexing': '正在更新对话列表和搜索索引', 'waiting-native-lock': '正在等待 Agent 释放会话写锁'}
+    if item.get('sync_state') not in ('collected', 'not-needed') and item.get('sync_stage') in stages:
+        text += '\n' + stages[item['sync_stage']]
     text += '\n登录状态和' + ('新会话启动' if item.get('kind') == 'new' else '原生恢复') + '结果以终端提示为准。'
     if item.get('sync_state') == 'failed':
         text += '\n续聊采集失败，可重试：' + item.get('sync_error', '')
     elif item.get('sync_state') == 'collected':
         text += '\n' + ('新会话历史采集已完成。' if item.get('kind') == 'new' else '续聊内容已采集。')
+        if item.get('sync_finished'):
+            text += '\n最近同步：' + item['sync_finished'][:19].replace('T', ' ') + ' UTC'
     if item.get('session_detached'):
         text += '\n原对话已切出并同步；终端可继续其他对话，此状态不代表终端进程退出。'
     if item.get('handoff_state') == 'cleaned':
@@ -217,7 +278,7 @@ def claim(identity):
 
 
 def reconcile(identity=None):
-    for item in [read(identity)] if identity else reports(limit=None):
+    for item in [read(identity)] if identity else report_catalog(limit=None, active_only=True):
         if item['state'] == 'running' and not process_matches(item):
             update(item['id'], expected_state='running',
                    expected_fields={key: item.get(key) for key in ('pid', 'pid_started', 'updated')},
@@ -231,13 +292,15 @@ def reconcile(identity=None):
 
 
 def mark_collected(report):
-    for item in reports(limit=None):
+    for item in report_catalog(limit=None, active_only=True):
         if item['source_path'] in report.get('skipped', []):
             continue
         if not item.get('handoff_state') and not item.get('single_head') and item['state'] in ('exited', 'failed', 'interrupted') and \
                 item.get('sync_state') not in ('collected', 'not-needed'):
             failed = collection_failed(item, report)
-            update(item['id'], sync_state='failed' if failed else 'collected',
+            update(item['id'], expected_state=item['state'],
+                   expected_fields={key: item.get(key) for key in ('pid', 'pid_started', 'attempts', 'updated', 'sync_state')},
+                   sync_state='failed' if failed else 'collected',
                    sync_error='当前会话读取失败，请检查历史来源后重试。' if failed else '')
 
 

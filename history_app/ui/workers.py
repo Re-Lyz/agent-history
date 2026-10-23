@@ -10,6 +10,7 @@ import connections
 import settings_ui
 import launch_jobs
 import conversation_store as conversations
+from history_app.reader_data import ReadCancelled
 
 
 def create_mixin(bindings, desktop):
@@ -54,7 +55,11 @@ def create_mixin(bindings, desktop):
                     if completed_job[0] != 'history-list' or error:
                         self.busy.set('')
                     try:
-                        if error:
+                        if error and completed_job[0] == 'reader-full':
+                            self.reader_full_loading = None
+                        if isinstance(error, ReadCancelled):
+                            pass
+                        elif error:
                             self.show_error('操作失败', error)
                         elif done:
                             done(result)

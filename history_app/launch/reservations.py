@@ -19,6 +19,17 @@ def versions(db, conversation):
         'SELECT * FROM conversation_versions WHERE conversation=?', (conversation,))]
 
 
+def collection_paths(db, conversation):
+    """Include indexed copies before retirement invalidates their ownership."""
+    paths = set()
+    for item in versions(db, conversation):
+        row = json.loads(item['row_json'])
+        paths.add(row['path'])
+        paths.update(copy['path'] for copy in db.execute('SELECT path FROM files WHERE session_key=?',
+                                                       (row['tool'] + ':' + row['id'],)))
+    return paths
+
+
 @contextlib.contextmanager
 def idle_native_versions(db, conversation):
     """Hold each native session once, even if several versions alias its lock."""
@@ -332,7 +343,7 @@ def compact(db, identity, current):
         if journal['version'] not in {item['id'] for item in selected}:
             selected.append(lifecycle.version(db, journal['version']))
     paths = {str(Path(json.loads(item['row_json'])['path']).resolve()) for item in selected}
-    forks = trash.fork_index(db)
+    forks = trash.fork_index(db) if selected else {}
     rows = {item['id']: json.loads(item['row_json']) for item in selected}
     current_row = json.loads(current['row_json'])
     if any(all(row[key] == current_row[key] for key in ('tool', 'source', 'id')) for row in rows.values()):
@@ -386,12 +397,14 @@ def finish(db, identity, *, manual=False):
     if lease and lease['job'] != identity:
         raise ValueError('原对话已由另一启动任务接管，旧任务保留文件，停止清理。')
     row = json.loads(current['row_json'])
+    paths = collection_paths(db, current['conversation'])
     from setup_backend import load_sources, source_enabled
     if not source_enabled(row, load_sources()):
         raise ValueError('当前历史来源已停用，请重新接入后同步。')
+    jobs.update(identity, sync_stage='checking-content')
     with lifecycle.session_lock(row) as free:
         if not free or lifecycle.claude_running(row):
-            raise ValueError('当前 Agent 会话仍在使用，请先退出后同步。')
+            raise lifecycle.SessionBusyError('当前 Agent 会话仍在使用，请先退出后同步。')
         lifecycle.complete_file(row['path'])
         store.observe(db, current)
         current = lifecycle.version(db, current['id'])
@@ -403,10 +416,12 @@ def finish(db, identity, *, manual=False):
         if selected:
             raise ValueError('Agent 非正常结束，旧文件保留；可手动重试同步。')
         store.activate(db, current)
+        ah.collect(db, only_paths=paths)
         jobs.update(identity, sync_state='collected', sync_error='')
         release(db, identity)
         return None
     if item or selected:
+        jobs.update(identity, sync_stage='verifying-native')
         current = lifecycle.verify_native(db, current, store.revision(db, current['head']))
     if item:
         lifecycle.update(db, identity, state='preserving', final_revision=current['head'],
@@ -414,14 +429,17 @@ def finish(db, identity, *, manual=False):
     jobs.update(identity, handoff_state='preserved', durable_session=row['id'], durable_source=row['source'])
     with lifecycle.session_lock(row) as free:
         if not free or lifecycle.claude_running(row):
-            raise ValueError('主会话重新被打开，已保存内容，等待安全清理。')
+            raise lifecycle.SessionBusyError('主会话重新被打开，已保存内容，等待安全清理。')
         records, _ = store.read_native(row)
         if store.digest(records) != store.revision(db, current['head'])['native_hash']:
             raise ValueError('主会话在验证后发生变化，暂不清理。')
+        jobs.update(identity, sync_stage='retiring-covered')
         compact(db, identity, current)
-        if item:
-            lifecycle.update(db, identity, state='cleaned', error='')
-        jobs.update(identity, handoff_state='cleaned', sync_state='collected', sync_error='')
-        release(db, identity)
-    ah.collect(db)
+    # Publish completion only after the affected index is ready for the viewer.
+    jobs.update(identity, sync_stage='indexing')
+    ah.collect(db, only_paths=paths)
+    if item:
+        lifecycle.update(db, identity, state='cleaned', error='')
+    jobs.update(identity, handoff_state='cleaned', sync_state='collected', sync_error='')
+    release(db, identity)
     return lifecycle.get(db, identity) if item else None

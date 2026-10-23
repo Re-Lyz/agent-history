@@ -57,18 +57,46 @@ CREATE TABLE IF NOT EXISTS file_views(path TEXT PRIMARY KEY, stamp TEXT NOT NULL
     metadata TEXT NOT NULL, turns INTEGER NOT NULL, search_text TEXT NOT NULL);
 """
 
+SEARCH_SCHEMA = """
+CREATE INDEX IF NOT EXISTS files_session ON files(session_key);
+CREATE VIRTUAL TABLE IF NOT EXISTS file_views_fts USING fts5(search_text,
+    content='file_views', content_rowid='rowid', tokenize='trigram', detail='none');
+CREATE TABLE IF NOT EXISTS file_view_search_coverage(view_rowid INTEGER PRIMARY KEY);
+CREATE TRIGGER IF NOT EXISTS file_views_bi BEFORE INSERT ON file_views BEGIN
+    INSERT INTO file_views_fts(file_views_fts,rowid,search_text)
+        SELECT 'delete',v.rowid,v.search_text FROM file_views v
+        JOIN file_view_search_coverage c ON c.view_rowid=v.rowid WHERE v.path=new.path;
+    DELETE FROM file_view_search_coverage WHERE view_rowid IN
+        (SELECT rowid FROM file_views WHERE path=new.path); END;
+CREATE TRIGGER IF NOT EXISTS file_views_ai AFTER INSERT ON file_views BEGIN
+    INSERT INTO file_views_fts(rowid,search_text) VALUES(new.rowid,new.search_text);
+    INSERT INTO file_view_search_coverage VALUES(new.rowid) ON CONFLICT(view_rowid) DO NOTHING; END;
+CREATE TRIGGER IF NOT EXISTS file_views_ad AFTER DELETE ON file_views BEGIN
+    INSERT INTO file_views_fts(file_views_fts,rowid,search_text)
+        SELECT 'delete',old.rowid,old.search_text WHERE EXISTS
+        (SELECT 1 FROM file_view_search_coverage WHERE view_rowid=old.rowid);
+    DELETE FROM file_view_search_coverage WHERE view_rowid=old.rowid; END;
+CREATE TRIGGER IF NOT EXISTS file_views_au AFTER UPDATE ON file_views BEGIN
+    INSERT INTO file_views_fts(file_views_fts,rowid,search_text)
+        SELECT 'delete',old.rowid,old.search_text WHERE EXISTS
+        (SELECT 1 FROM file_view_search_coverage WHERE view_rowid=old.rowid);
+    INSERT INTO file_views_fts(rowid,search_text) VALUES(new.rowid,new.search_text);
+    INSERT INTO file_view_search_coverage VALUES(new.rowid) ON CONFLICT(view_rowid) DO NOTHING; END;
+"""
+
 
 def connect():
     DATA.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(DATA / 'history.db', timeout=30)
     db.row_factory = sqlite3.Row
     version = db.execute('PRAGMA user_version').fetchone()[0]
-    if version >= 3:
+    if version >= 4:
         return db
     import conversation_titles
     if version >= 2:
         db.executescript(conversation_titles.SCHEMA)
-        db.execute('PRAGMA user_version=3')
+        db.executescript(SEARCH_SCHEMA)
+        db.execute('PRAGMA user_version=4')
         db.commit()
         return db
     db.executescript(SCHEMA)
@@ -81,7 +109,8 @@ def connect():
         if column not in columns:
             db.execute(f'ALTER TABLE imports ADD COLUMN {column} {kind}')
     db.executescript(conversation_titles.SCHEMA)
-    db.execute('PRAGMA user_version=3')
+    db.executescript(SEARCH_SCHEMA)
+    db.execute('PRAGMA user_version=4')
     db.commit()
     return db
 
@@ -148,6 +177,17 @@ def resolve_codex(db, source, ref, include_imports=True):
     return row
 
 
+def session_titles(home):
+    titles = {}
+    index = home / 'session_index.jsonl'
+    if index.exists():
+        for line in index.read_text(encoding='utf-8', errors='replace').splitlines():
+            with contextlib.suppress(ValueError):
+                item = json.loads(line)
+                titles[item.get('id')] = item.get('thread_name') or ''
+    return titles
+
+
 def discover():
     """Yield (tool, source, path, titles) for every transcript file."""
     import setup_backend
@@ -155,18 +195,38 @@ def discover():
     for name, home in codex_homes():
         if selected is not None and name not in selected['codex']:
             continue
-        titles = {}
-        index = home / 'session_index.jsonl'
-        if index.exists():
-            for line in index.read_text(encoding='utf-8', errors='replace').splitlines():
-                with contextlib.suppress(ValueError):
-                    item = json.loads(line)
-                    titles[item.get('id')] = item.get('thread_name') or ''
+        titles = session_titles(home)
         for folder in ('sessions', 'archived_sessions'):
             for path in (home / folder).rglob('*.jsonl'):
                 yield 'codex', name, path, titles
     for home in claude_homes():
         for path in (home / 'projects').glob('*/*.jsonl'):
+                yield 'claude', 'claude', path, {}
+
+
+def discover_paths(paths):
+    """Resolve exact affected paths without enumerating unrelated directories.
+
+    Respect the same enabled sources and directory boundaries as discover.
+    This is indexing only; destructive callers still discover native forks.
+    """
+    import setup_backend
+    selected = setup_backend.load_sources()
+    candidates = [Path(path) for path in sorted(paths) if Path(path).match('*.jsonl')]
+    for name, home in codex_homes():
+        if selected is not None and name not in selected['codex']:
+            continue
+        roots = [home / 'sessions', home / 'archived_sessions']
+        owned = [path for path in candidates if any(path.is_relative_to(root) for root in roots)]
+        if owned:
+            titles = session_titles(home)
+            for path in owned:
+                if path.is_file():
+                    yield 'codex', name, path, titles
+    for home in claude_homes():
+        root = home / 'projects'
+        for path in candidates:
+            if path.is_relative_to(root) and len(path.relative_to(root).parts) == 2 and path.is_file():
                 yield 'claude', 'claude', path, {}
 
 
@@ -284,7 +344,8 @@ def prefix_hash(path, size):
 def collect(db, verbose=False, only_paths=None):
     only_paths = {str(Path(path).resolve()) for path in only_paths} if only_paths is not None else None
     seen, changed = set(), 0
-    for tool, source, path, titles in discover():
+    discovered = discover() if only_paths is None else discover_paths(only_paths)
+    for tool, source, path, titles in discovered:
         key = str(path)
         if only_paths is not None and key not in only_paths:
             continue
@@ -313,8 +374,7 @@ def collect(db, verbose=False, only_paths=None):
         changed += 1
         if verbose:
             print(f'indexed {tool}:{source} {path.name}')
-    for gone in [r['path'] for r in db.execute('SELECT path FROM files') if r['path'] not in seen and
-                 (only_paths is None or r['path'] in only_paths)]:
+    for gone in [r['path'] for r in path_rows(db, 'SELECT path FROM files', only_paths) if r['path'] not in seen]:
         forget_file(db, gone)        # e.g. moved to archived_sessions; the new path is re-indexed
     db.commit()
     # A long-lived pre-upgrade MCP process may have seen a refreshed file with
@@ -323,8 +383,8 @@ def collect(db, verbose=False, only_paths=None):
         db.execute("""UPDATE sessions SET kind='import',
             imported_from=(SELECT src_key FROM codex_imports WHERE dst_key=sessions.key)
             WHERE key IN (SELECT dst_key FROM codex_imports)""")
-    for raw in db.execute('''SELECT s.*, f.source AS file_source, f.path AS file_path, f.mtime AS modified
-                             FROM files f JOIN sessions s ON s.key=f.session_key''').fetchall():
+    for raw in path_rows(db, '''SELECT s.*, f.source AS file_source, f.path AS file_path, f.mtime AS modified
+                             FROM files f JOIN sessions s ON s.key=f.session_key''', only_paths, 'f.path'):
         row = dict(raw)
         row['indexed_path'] = row['path']
         row['path'], row['source'] = row.pop('file_path'), row.pop('file_source')
@@ -332,7 +392,42 @@ def collect(db, verbose=False, only_paths=None):
             continue
         with contextlib.suppress(ValueError, OSError):
             physical_view(db, row)
+    refresh_search_index(db, only_paths)
     return changed
+
+
+def refresh_search_index(db, paths=None):
+    """Backfill old cached views in bounded transactions during background collection.
+
+    Until backfilled, queries use exact substring matching for uncovered rows.
+    Opening an existing database never waits for a full FTS rebuild.
+    """
+    condition = ''
+    if paths is not None:
+        db.execute('CREATE TEMP TABLE IF NOT EXISTS search_backfill_scope(path TEXT PRIMARY KEY)')
+        db.execute('DELETE FROM search_backfill_scope')
+        db.executemany('INSERT OR IGNORE INTO search_backfill_scope VALUES (?)', [(str(path),) for path in paths])
+        condition = ' AND path IN (SELECT path FROM search_backfill_scope)'
+    while True:
+        rows = db.execute('SELECT rowid,search_text FROM file_views WHERE rowid NOT IN '
+                          '(SELECT view_rowid FROM file_view_search_coverage)' + condition + ' LIMIT 50').fetchall()
+        if not rows:
+            return
+        with db:
+            db.executemany('INSERT INTO file_views_fts(rowid,search_text) VALUES (?,?)', rows)
+            db.executemany('INSERT INTO file_view_search_coverage VALUES (?)', [(row[0],) for row in rows])
+
+
+def path_rows(db, query, paths, column='path'):
+    """Bound SQLite parameters and fetched rows when refreshing a known scope."""
+    if paths is None:
+        yield from db.execute(query).fetchall()
+        return
+    values = sorted(paths)
+    for offset in range(0, len(values), 500):
+        batch = values[offset:offset + 500]
+        yield from db.execute(query + ' WHERE ' + column + ' IN (' + ','.join('?' for _ in batch) + ')',
+                              batch).fetchall()
 
 
 def forget_file(db, path):
@@ -369,9 +464,12 @@ def physical_view(db, row, query=''):
         raise ValueError('会话正在变化，请稍后刷新。')
     value['turns'] = sum(message['role'] == 'user' for message in messages)
     metadata = {name: value.get(name) for name in ('cwd', 'title', 'kind', 'started')}
+    metadata['message_count'] = len(messages)
     text = '\n'.join(message['text'] for message in messages).casefold()
     with db:
-        db.execute('INSERT OR REPLACE INTO file_views VALUES (?,?,?,?,?)',
+        db.execute('INSERT INTO file_views VALUES (?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET '
+                   'stamp=excluded.stamp, metadata=excluded.metadata, turns=excluded.turns, '
+                   'search_text=excluded.search_text',
                    (row['path'], stamp, json.dumps(metadata, ensure_ascii=False), value['turns'], text))
     return value, bool(query and query.casefold() in text)
 

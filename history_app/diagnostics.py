@@ -59,7 +59,7 @@ def diagnose(paths, deep=False):
                 status['tables'] = len(tables)
                 if deep:
                     status['integrity'] = 'ok' if db.execute('PRAGMA quick_check(1)').fetchone()[0] == 'ok' else 'failed'
-                status['compatibility'] = 'supported' if status['schema'] == 3 else 'needs-review'
+                status['compatibility'] = 'supported' if status['schema'] in (3, 4) else 'needs-review'
         except (OSError, sqlite3.Error):
             status['state'] = 'unreadable'
     states, unreadable = Counter(), 0

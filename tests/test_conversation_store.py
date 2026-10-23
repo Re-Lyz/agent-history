@@ -11,6 +11,56 @@ from tests.test_trash import Fixture, age
 
 
 class ConversationTests(Fixture):
+    def test_large_grouping_batches_membership_without_losing_separate_physical_files(self):
+        original = dict(ah.resolve(self.db, 's1'))
+        store.enroll(self.db, original)
+        # Stale/unregistered list entries still stay separate, even with the
+        # same native ID. More than 999 rows exercises SQLite parameter limits.
+        rows = [dict(original, path=str(self.a / 'sessions' / f'other-{i}.jsonl')) for i in range(1001)]
+        rows.append(original)
+        queries = []
+        self.db.set_trace_callback(queries.append)
+        try:
+            with patch.object(store, 'identity', wraps=store.identity) as identify:
+                grouped = store.group_rows(self.db, rows)
+            self.assertEqual(identify.call_count, len(rows))
+        finally:
+            self.db.set_trace_callback(None)
+        self.assertEqual(len(grouped), len(rows))
+        self.assertEqual({row['path'] for row in grouped}, {row['path'] for row in rows})
+        self.assertEqual(sum(bool(row.get('logical')) for row in grouped), 1)
+        membership = [query for query in queries if 'FROM conversation_versions WHERE identity IN (' in query]
+        self.assertLessEqual(len(membership), 3)
+
+    def test_bulk_sync_resolves_connections_once_and_refreshes_configuration_next_time(self):
+        import connections
+        from tests.test_trash import rollout
+        for i in range(3):
+            (self.a / 'sessions' / f'config-{i}.jsonl').write_text(
+                rollout(f'config-{i}', 'synthetic configuration check', self.cwd), encoding='utf-8')
+        ah.collect(self.db)
+        import history_ui
+        for row in history_ui.list_rows(self.db, limit=None):
+            store.enroll(self.db, row)
+        homes = []
+        stamp = backend.transcript_stamp
+        def capture(row):
+            homes.append(dict(ah.codex_homes())[row['source']])
+            return stamp(row)
+        registry = ah.ROOT / 'connections.json'
+        with patch.object(connections, 'load', wraps=connections.load) as load, \
+                patch.object(backend, 'transcript_stamp', side_effect=capture):
+            self.assertEqual(store.sync_all(self.db)['failed'], [])
+            self.assertEqual(load.call_count, 1)
+            self.assertEqual(set(homes), {self.a})
+            configured = json.loads(registry.read_text(encoding='utf-8'))
+            configured['connections']['a']['home'] = '../b'
+            registry.write_text(json.dumps(configured), encoding='utf-8')
+            homes.clear()
+            self.assertEqual(store.sync_all(self.db)['failed'], [])
+            self.assertEqual(load.call_count, 2)
+            self.assertEqual(set(homes), {self.b})
+
     def test_logical_launch_does_not_ignore_an_unreadable_related_version(self):
         original = dict(ah.resolve(self.db, 's1'))
         copied = self.launch(original, 'b')

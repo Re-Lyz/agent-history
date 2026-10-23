@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Page collected history in SQLite, read preview tails on demand across bounded native forks, and seek directly to full tool records. Avoid duplicate project-list scans, narrow exact physical-version search with FTS, cancel obsolete reads, display cached rows during startup, and cache completed launch reports with guarded state updates. See [performance measurements](docs/performance.md).
+
+- Refresh only related native paths after single-current-conversation exit; avoid whole-directory walks for exact-path indexing and skip fork scans when no files need retirement. Publish completion after indexing succeeds, retaining a recoverable reservation on failure.
+
+- Reuse connection resolution within each bulk sync and group listing; batch physical-version membership lookups and resolve each listed identity once, refreshing configuration on the next operation.
+
+- Avoid repeated whole-library scans after targeted sync and completed runner reports; briefly retry transient native writer locks after confirmed successful exit, preserving protection for interrupted runs and content conflicts.
+
 - Split the main viewer into focused controllers and group history storage, native adapters, and launch lifecycle modules; preserve legacy import identity, installed script paths, UTF-8 CLI errors, and runner exit codes.
 
 - Unified read-only diagnostics, redacted export, immutable app-configuration backups, verified restore and reviewed installation update / uninstall actions.

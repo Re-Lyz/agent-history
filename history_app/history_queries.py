@@ -16,8 +16,14 @@ def review_candidates():
 
 @connections.snapshot()
 def list_rows(db, source='', query='', include_imports=False, include_internal=False, only=None, limit=500,
-              project=None, sort_by='time', descending=True):
+              project=None, sort_by='time', descending=True, *, indexed=False, offset=0, logical=False, cancel=None,
+              keep_paths=None):
     """Filter all transcript versions and sort before applying a page limit."""
+    if indexed:
+        from history_app.indexed_listing import page
+        return page(db, source, query, include_imports, include_internal, only, limit,
+                    project, sort_by, descending, offset, logical, cancel, keep_paths)
+    from history_app.reader_data import checkpoint
     kinds = {'main'} | ({'import'} if include_imports else set()) | \
         ({'guardian', 'subagent'} if include_internal else set())
     rows, seen = [], set()
@@ -25,6 +31,7 @@ def list_rows(db, source='', query='', include_imports=False, include_internal=F
     scope = setup_backend.load_sources()
     for raw in db.execute('''SELECT s.*, f.source AS file_source, f.path AS file_path, f.mtime AS modified
                              FROM files f JOIN sessions s ON s.key=f.session_key ORDER BY f.mtime DESC'''):
+        checkpoint(cancel)
         r = dict(raw)
         r['indexed_path'] = r['path']
         r['source'], r['path'] = r.pop('file_source'), r.pop('file_path')
@@ -59,10 +66,8 @@ def list_rows(db, source='', query='', include_imports=False, include_internal=F
 
 def project_choices(db, list_fn=None):
     """Include every indexed project, including missing directories and hidden session kinds."""
-    projects = {}
-    for row in (list_fn or list_rows)(db, include_imports=True, include_internal=True, limit=None):
-        projects.setdefault(support.project_key(row['cwd']), row['cwd'] or '')
-    return {'全部项目': None, **{cwd or '未记录目录': cwd for cwd in sorted(projects.values(), key=str.casefold)}}
+    from history_app.indexed_listing import project_choices as indexed_projects
+    return indexed_projects(db)
 
 
 def recovery_job(db, selected, fallback=None):

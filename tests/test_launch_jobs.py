@@ -6,6 +6,7 @@ import subprocess
 import sys
 import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import agent_history as ah
@@ -16,6 +17,121 @@ from tests.test_trash import Fixture
 
 
 class LaunchJobTests(Fixture):
+    def test_successful_exit_retries_a_transient_native_lock_without_restarting_agent(self):
+        import codex_import as ci
+        prepared = backend.prepare_launch(self.db, dict(ah.resolve(self.db, 's1')), 'a', self.cwd)
+        held = ci.writer_lock(self.a, 's1')
+        def execute_command(*args, **kwargs):
+            self.assertTrue(held.__enter__())
+            return subprocess.CompletedProcess([], 0)
+        def release(delay):
+            with ah.collect_lock(wait=False) as free:
+                self.assertTrue(free, 'Backoff must release the collector lock.')
+            held.__exit__(None, None, None)
+        try:
+            with patch.object(runner.subprocess, 'run', side_effect=execute_command) as execute, \
+                    patch.object(runner.time, 'sleep', side_effect=release) as pause:
+                self.assertEqual(runner.run(prepared['job'], ['fixture']), 0)
+            execute.assert_called_once()
+            pause.assert_called_once_with(.25)
+            self.assertEqual(jobs.read(prepared['job'])['sync_state'], 'collected')
+            self.assertTrue(self.path.is_file())
+        finally:
+            held.__exit__(None, None, None)
+
+    def test_persistent_native_lock_has_bounded_retries_and_retains_reservation(self):
+        import codex_import as ci
+        prepared = backend.prepare_launch(self.db, dict(ah.resolve(self.db, 's1')), 'a', self.cwd)
+        original = self.path.read_bytes()
+        held = ci.writer_lock(self.a, 's1')
+        def execute_command(*args, **kwargs):
+            self.assertTrue(held.__enter__())
+            return subprocess.CompletedProcess([], 0)
+        try:
+            with patch.object(runner.subprocess, 'run', side_effect=execute_command) as execute, \
+                    patch.object(runner.time, 'sleep') as pause:
+                self.assertEqual(runner.run(prepared['job'], ['fixture']), 0)
+        finally:
+            held.__exit__(None, None, None)
+        self.assertEqual(pause.call_count, 3)
+        execute.assert_called_once()
+        self.assertEqual(jobs.read(prepared['job'])['sync_state'], 'failed')
+        self.assertIsNotNone(self.db.execute('SELECT job FROM conversation_runs WHERE job=?', (prepared['job'],)).fetchone())
+        self.assertEqual(self.path.read_bytes(), original)
+
+    def test_failed_exit_does_not_automatically_retry_native_lock(self):
+        import single_conversation
+        import handoff_lifecycle
+        prepared = backend.prepare_launch(self.db, dict(ah.resolve(self.db, 's1')), 'a', self.cwd)
+        with patch.object(runner.subprocess, 'run', return_value=subprocess.CompletedProcess([], 12)), \
+                patch.object(single_conversation, 'finish', side_effect=handoff_lifecycle.SessionBusyError('busy')) as finish, \
+                patch.object(runner.time, 'sleep') as pause:
+            self.assertEqual(runner.run(prepared['job'], ['fixture']), 12)
+        finish.assert_called_once()
+        pause.assert_not_called()
+        self.assertEqual(jobs.read(prepared['job'])['sync_state'], 'failed')
+
+    def test_content_validation_failure_does_not_automatically_retry(self):
+        import single_conversation
+        prepared = backend.prepare_launch(self.db, dict(ah.resolve(self.db, 's1')), 'a', self.cwd)
+        with patch.object(runner.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)), \
+                patch.object(single_conversation, 'finish', side_effect=ValueError('independent branch')) as finish, \
+                patch.object(runner.time, 'sleep') as pause:
+            self.assertEqual(runner.run(prepared['job'], ['fixture']), 0)
+        finish.assert_called_once()
+        pause.assert_not_called()
+        self.assertEqual(jobs.read(prepared['job'])['sync_state'], 'failed')
+
+    def controller(self, selected, identity):
+        from history_app.ui.launch import create_mixin
+        from history_app.history_queries import recovery_job
+        desktop = SimpleNamespace(tk=None, ttk=None, messagebox=None, filedialog=None, palette={})
+        controller = create_mixin(SimpleNamespace(recovery_job=recovery_job), desktop)()
+        controller.selected = lambda: [selected]
+        controller.launch_job = identity
+        controller.launch_status = controller.busy = SimpleNamespace(set=lambda value: None)
+        controller.after_reindex = lambda snapshot: None
+        controller.reindex = lambda: self.fail('A completed targeted sync must not reindex all conversations again.')
+        controller.background = lambda work, done, **kwargs: done(work())
+        return controller
+
+    def test_targeted_ui_retry_indexes_once_and_does_not_sync_unrelated_jobs(self):
+        import conversation_store as store
+        selected = dict(ah.resolve(self.db, 's1'))
+        prepared = backend.prepare_launch(self.db, selected, 'a', self.cwd)
+        jobs.update(prepared['job'], state='exited', exit_code=0)
+        controller = self.controller(selected, prepared['job'])
+        with patch.object(ah, 'collect', wraps=ah.collect) as collect, \
+                patch.object(store, 'sync_all', side_effect=AssertionError('Unrelated full sync')):
+            controller.retry_handoff()
+        self.assertEqual(collect.call_count, 1)
+        self.assertEqual(jobs.read(prepared['job'])['sync_state'], 'collected')
+
+    def test_ui_retry_still_discovers_new_sessions_without_conversation_reservations(self):
+        from tests.test_trash import rollout
+        from history_app.ui.workers import create_mixin
+        prepared = backend.prepare_new('a', self.cwd)
+        jobs.update(prepared['job'], state='interrupted')
+        transcript = self.a / 'sessions' / 'new-after-interruption.jsonl'
+        transcript.write_text(rollout('new-after-interruption', 'saved before interruption', self.cwd), encoding='utf-8')
+        controller = self.controller(None, prepared['job'])
+        workers = create_mixin(None, None)
+        controller.reindex = lambda: workers.reindex(controller)
+        controller.retry_handoff()
+        self.assertEqual(jobs.read(prepared['job'])['sync_state'], 'collected')
+        self.assertEqual(ah.resolve(self.db, 'new-after-interruption')['turns'], 1)
+
+    def test_completed_runner_report_refreshes_view_without_rescanning_history(self):
+        selected = dict(ah.resolve(self.db, 's1'))
+        prepared = backend.prepare_launch(self.db, selected, 'a', self.cwd)
+        jobs.update(prepared['job'], state='exited', exit_code=0, sync_state='collected')
+        controller = self.controller(selected, prepared['job'])
+        controller.last_launch_report = None
+        controller.root = SimpleNamespace(after=lambda *args: None)
+        with patch.object(ah, 'collect', side_effect=AssertionError('Runner already indexed')):
+            controller.poll_launch_report()
+        self.assertEqual(controller.last_launch_report['sync_state'], 'collected')
+
     def test_ui_status_read_does_not_wait_for_report_writer(self):
         prepared = backend.prepare_launch(self.db, dict(ah.resolve(self.db, 's1')), 'a', self.cwd)
         with ah.file_lock(jobs.path(prepared['job']).with_suffix('.lock'), wait=False) as locked:

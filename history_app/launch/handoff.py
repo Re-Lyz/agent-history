@@ -18,6 +18,10 @@ import conversation_store as store
 import launch_jobs as jobs
 
 
+class SessionBusyError(ValueError):
+    """Native processes may release their final writer locks just after exit."""
+
+
 def get(db, identity):
     row = db.execute('SELECT * FROM temporary_handoffs WHERE id=?', (identity,)).fetchone()
     return dict(row) if row else None
@@ -339,7 +343,7 @@ def finish(db, identity, *, manual=False, allow_branch=False):
         raise ValueError('原平台会话已删除，临时副本保留；请选择要保留的分支。')
     with session_lock(origin_row) as free:
         if not free or claude_running(origin_row):
-            raise ValueError('原平台会话正在使用，临时副本保留，关闭后可重试同步。')
+            raise SessionBusyError('原平台会话正在使用，临时副本保留，关闭后可重试同步。')
         store.observe(db, origin)
         origin = version(db, origin['id'])
         previous_events = store.revision(db, item['origin_revision'])['events']
@@ -349,7 +353,7 @@ def finish(db, identity, *, manual=False, allow_branch=False):
         if item['state'] != 'cleaning' or Path(temp_row['path']).exists():
             with session_lock(temp_row) as free:
                 if not free or claude_running(temp_row):
-                    raise ValueError('临时目标仍在使用，结束后可重试同步。')
+                    raise SessionBusyError('临时目标仍在使用，结束后可重试同步。')
                 if not Path(temp_row['path']).is_file():
                     raise ValueError('临时副本被删除，不能自动清理或覆盖删除记录。')
                 complete_file(temp_row['path'])

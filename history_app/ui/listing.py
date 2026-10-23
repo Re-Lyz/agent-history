@@ -19,6 +19,9 @@ def create_mixin(bindings, desktop):
             self.sort_descending = not self.sort_descending if self.sort_column == column else column == 'time'
             self.sort_column = column
             if hasattr(self, 'all_rows'):
+                if getattr(self, 'list_total', len(self.all_rows)) > len(self.all_rows):
+                    self.refresh()
+                    return
                 selected = next(iter(self.tree.selection()), None)
                 rows = support.sort_history(self.all_rows, self.sort_column, self.sort_descending)
                 self.display_rows(rows, selected, self.tree.yview()[0])
@@ -37,12 +40,15 @@ def create_mixin(bindings, desktop):
             column, descending = self.sort_column, self.sort_descending
             selected = next(iter(self.tree.selection()), None)
             selected_row = self.rows.get(selected)
+            keep_paths = {row['path'] for iid, row in self.rows.items() if iid in self.checked or iid == selected}
             list_position = self.tree.yview()[0]
             filters = (source, query, imports, internal, project_label,
                        None if only is None else tuple(sorted(only)))
             if filters != getattr(self, 'previous_filters', None):
                 self.list_limit = bindings.LIST_PAGE
             self.previous_filters = filters
+            limit = self.list_limit
+            cancelled = lambda: request != self.list_request
             if not query:
                 self.version_override = None
                 self.version_iid = None
@@ -56,14 +62,14 @@ def create_mixin(bindings, desktop):
                     if label not in choices:
                         label = next((name for name, path in choices.items() if path is not None and
                                       support.project_key(path) == support.project_key(label)), '全部项目')
-                    rows = bindings.list_rows(db, source, query, imports, internal, only, limit=None,
-                                     project=choices.get(label), sort_by=column, descending=descending)
+                    rows = bindings.list_rows(db, source, query, imports, internal, only, limit=limit,
+                                     project=choices.get(label), sort_by=column, descending=descending,
+                                     indexed=True, logical=True, cancel=cancelled, keep_paths=keep_paths)
                     selection = selected
                     member = conversations.lookup(db, selected_row) if selected_row and not query else None
                     # Search keeps the matching physical version, even if another
                     # branch is the conversation's current display version.
                     if not query and not imports and only is None:
-                        rows = conversations.group_rows(db, rows)
                         replacement = next((row for row in rows if member and
                                             row.get('conversation') == member['conversation']), None)
                         if replacement:
@@ -84,6 +90,8 @@ def create_mixin(bindings, desktop):
                 if request != self.list_request:
                     return
                 rows, selection, choices, label = result
+                self.list_total = getattr(rows, 'total', len(rows))
+                self.list_limit = max(self.list_limit, len(rows))
                 self.project_map = choices
                 self.project_box['values'] = list(choices)
                 self.project.set(label)
@@ -112,8 +120,8 @@ def create_mixin(bindings, desktop):
                             if f"{row['source']}|{row['path']}" in keep), default=0)
                 self.list_limit = max(self.list_limit, last)
             self.previous_sort = order
-            total = len(rows)
-            has_more = len(rows) > self.list_limit
+            total = getattr(self, 'list_total', len(rows))
+            has_more = total > self.list_limit
             rows = rows[:self.list_limit]
             self.more_rows.state(['!disabled'] if has_more else ['disabled'])
             self.list_count.set(f'已显示 {len(rows)} / {total} 条' + (' · 还有更多' if has_more else ' · 已全部显示'))
@@ -131,8 +139,10 @@ def create_mixin(bindings, desktop):
                 title = (r['title'] or r['cwd'] or r['id']).replace('\n', ' ')[:120]
                 values = (bindings.CHECK_OFF, when, r['source'], r['turns'], title)
                 if self.tree.exists(iid):
-                    self.tree.item(iid, values=values)
-                    self.tree.move(iid, '', index)
+                    if tuple(map(str, self.tree.item(iid, 'values'))) != tuple(map(str, values)):
+                        self.tree.item(iid, values=values)
+                    if self.tree.index(iid) != index:
+                        self.tree.move(iid, '', index)
                 else:
                     self.tree.insert('', index, iid=iid, values=values)
             self.checked &= set(self.rows)      # keep ticks that are still visible
@@ -230,9 +240,6 @@ def create_mixin(bindings, desktop):
 
         def load_more_rows(self):
             self.list_limit += bindings.LIST_PAGE
-            if hasattr(self, 'all_rows') and not any(job[0] == 'history-list' for job in self.jobs.values()):
-                self.display_rows(self.all_rows, next(iter(self.tree.selection()), None), self.tree.yview()[0])
-            else:
-                self.refresh()
+            self.refresh()
 
     return ListingController

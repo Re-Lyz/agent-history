@@ -14,6 +14,7 @@ from pathlib import Path
 import uuid
 
 import agent_history as ah
+import connections
 import codex_import as ci
 from setup_backend import atomic_json, load_sources, source_enabled
 
@@ -292,6 +293,7 @@ def enroll(db, row, parent_revision=None, conversation=None):
     return dict(db.execute('SELECT * FROM conversation_versions WHERE id=?', (vid,)).fetchone())
 
 
+@connections.snapshot()
 def sync_all(db, conversation=None, force=False):
     ensure(db)
     recover_intents(db)
@@ -314,11 +316,15 @@ def sync_all(db, conversation=None, force=False):
     return report
 
 
-def members(db, conversation, include_merged=False):
-    scope = load_sources()
-    items = [dict(row) for row in db.execute("SELECT * FROM conversation_versions WHERE conversation=? AND present=1 AND head IS NOT NULL AND state<>'merge-pending'",
-                                           (conversation,)) if source_enabled(json.loads(row['row_json']), scope) and
-            Path(json.loads(row['row_json'])['path']).exists()]
+def members(db, conversation, include_merged=False, *, _items=None):
+    items = _items
+    if items is None:
+        scope = load_sources()
+        items = []
+        for raw in db.execute("SELECT * FROM conversation_versions WHERE conversation=? AND present=1 AND head IS NOT NULL AND state<>'merge-pending'", (conversation,)):
+            row = json.loads(raw['row_json'])
+            if source_enabled(row, scope) and Path(row['path']).exists():
+                items.append(dict(raw))
     if include_merged:
         return items
     # Old versions stay on disk. Only hide the exact content included in a
@@ -340,8 +346,8 @@ def members(db, conversation, include_merged=False):
     return [item for item in items if item['id'] not in covered]
 
 
-def tips(db, conversation):
-    items = members(db, conversation)
+def tips(db, conversation, *, _items=None):
+    items = members(db, conversation) if _items is None else _items
     signatures = {item['id']: json.loads(item['event_ids']) if item['event_ids'] else
                   [event['id'] for event in revision(db, item['head'])['events']] for item in items if item['head']}
     active = db.execute('SELECT active_version FROM conversations WHERE id=?', (conversation,)).fetchone()[0]
@@ -510,14 +516,24 @@ def publish_claude(db, source, projected, cwd, intent=None, on_publish=None):
     return target_row
 
 
-@ah.connections.snapshot()
+@connections.snapshot()
 def group_rows(db, rows):
     """Group only explicitly related versions; preserve unrelated same-ID files."""
     ensure(db)
     result, seen = [], set()
-    available = {identity(row): row for row in rows}
-    for row in rows:
-        item = lookup(db, row)
+    identified = [(identity(row), row) for row in rows]
+    available = dict(identified)
+    # Resolve each physical identity once and fetch membership in bounded
+    # batches. Keep the full identity: equal native IDs can be separate files.
+    physical_ids = list(available)
+    enrolled = {}
+    for offset in range(0, len(physical_ids), 500):
+        batch = physical_ids[offset:offset + 500]
+        placeholders = ','.join('?' for _ in batch)
+        enrolled.update((item['identity'], item) for item in db.execute(
+            'SELECT * FROM conversation_versions WHERE identity IN (' + placeholders + ')', batch))
+    for physical_id, row in identified:
+        item = enrolled.get(physical_id)
         if not item or not item['head']:
             result.append(row)
             continue
@@ -525,8 +541,10 @@ def group_rows(db, rows):
         if cid in seen:
             continue
         seen.add(cid)
-        choices = [member for member in members(db, cid, include_merged=True) if member['identity'] in available]
-        heads = tips(db, cid)
+        all_members = members(db, cid, include_merged=True)
+        visible_members = members(db, cid, _items=all_members)
+        choices = [member for member in all_members if member['identity'] in available]
+        heads = tips(db, cid, _items=visible_members)
         candidates = [head for head in heads if head['identity'] in available]
         active = db.execute('SELECT active_version FROM conversations WHERE id=?', (cid,)).fetchone()[0]
         selected = next((head for head in candidates if head['id'] == active), None) or \
@@ -534,6 +552,6 @@ def group_rows(db, rows):
         if selected:
             value = dict(available[selected['identity']])
             value.update(conversation=cid, version=selected['id'], branches=len(heads),
-                         version_count=len(members(db, cid)), logical=True)
+                         version_count=len(visible_members), logical=True)
             result.append(value)
     return result

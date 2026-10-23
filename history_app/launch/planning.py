@@ -14,7 +14,7 @@ import launch_profiles as profiles
 import launch_runner
 import connections
 import entry_settings
-import tool_details
+from history_app.reader_data import message_events, positioned_records, file_message_page
 import terminal_platform
 from history_app.paths import SOURCE
 
@@ -22,9 +22,8 @@ SHORTCUTS = {'openai1': 'codex1', 'openai2': 'codex2', 'openai3': 'codex3', 'dee
 CLAUDE = 'claude'
 
 
-def file_messages(row):
+def file_messages(row, cancel=None):
     """Read the selected physical transcript, including bounded native fork ancestors."""
-    parser = ah.PARSERS[row['tool']]
     if row['tool'] == 'codex':
         home = dict(ah.codex_homes()).get(row['source'])
         if home is None:
@@ -35,17 +34,9 @@ def file_messages(row):
     messages = []
     for path, byte_limit, ordinal_limit in chain:
         stat = Path(path).stat()
-        for ordinal, record in enumerate(ah.codex_import.records(path, byte_limit, ordinal_limit)):
-            tools = iter(tool_details.descriptors(row['tool'], record))
-            for event in parser(record):
-                if event[0] == 'msg':
-                    message = dict(role=event[1], text=event[2], ts=event[3])
-                    if event[1] in ('tool_call', 'tool_output'):
-                        descriptor = next(tools, {})
-                        message.update(call_id=descriptor.get('call_id'), tool_name=descriptor.get('name', '工具详情'),
-                            detail=dict(tool=row['tool'], path=str(path), ordinal=ordinal,
-                                        stamp=(stat.st_size, stat.st_mtime_ns), role=event[1], block=descriptor.get('block')))
-                    messages.append(message)
+        for offset, ordinal, record in positioned_records(path, byte_limit, ordinal_limit, cancel):
+            messages.extend(message_events(row['tool'], path, record, (stat.st_size, stat.st_mtime_ns),
+                                           offset=offset, ordinal=ordinal))
     return messages
 
 

@@ -137,6 +137,8 @@ class ViewerInteractionTests(unittest.TestCase):
     def wait_reader(self):
         # update() can return between the viewer's scheduled rendering batches.
         # Wait for completion and startup geometry before reading or scrolling.
+        self.wait(lambda: not any(any(label in status for label in
+            ('加载更早消息…', '搜索完整对话…', '准备对话排版…')) for status in self.statuses()))
         self.wait(lambda: not any(
             'batch' in str(self.root.tk.call('after', 'info', job))
             for job in self.root.tk.call('after', 'info')), timeout=30)
@@ -370,14 +372,14 @@ class ViewerInteractionTests(unittest.TestCase):
         with path.open('a', encoding='utf-8') as stream:
             stream.write(json.dumps(dict(type='diagnostic', padding='x' * 1_100_000)) + '\n')
         started, release = threading.Event(), threading.Event()
-        actual = ui.file_messages
+        actual = ui.file_message_page
         main_thread = threading.get_ident()
-        def read(row):
+        def read(row, *args, **kwargs):
             if row['id'] == 'one':
                 self.assertNotEqual(threading.get_ident(), main_thread)
                 started.set()
                 release.wait(5)
-            return actual(row)
+            return actual(row, *args, **kwargs)
         def interact(root):
             tree = next(w for w in self.widgets() if isinstance(w, self.ttk.Treeview) and 'check' in w.cget('columns'))
             self.wait(lambda: len(tree.get_children()) == 2)
@@ -392,7 +394,7 @@ class ViewerInteractionTests(unittest.TestCase):
             self.assertEqual(tree.selection(), (two,))
             self.assertTrue(any('two.jsonl' in status for status in self.statuses()))
             root.tk.call(root.protocol('WM_DELETE_WINDOW'))
-        with patch.object(ui, 'file_messages', side_effect=read):
+        with patch.object(ui, 'file_message_page', side_effect=read):
             try:
                 self.exercise(interact)
             finally:
@@ -415,6 +417,10 @@ class ViewerInteractionTests(unittest.TestCase):
         def interact(root):
             tree = next(w for w in self.widgets() if isinstance(w, self.ttk.Treeview) and 'check' in w.cget('columns'))
             self.wait(lambda: len(tree.get_children()) == 2)
+            # Cached rows now appear before initial discovery completes. Wait
+            # for that independent refresh before measuring filter coalescing.
+            self.wait(lambda: not any(label in status for status in self.statuses() for label in
+                                     ('正在索引历史…', '正在读取历史…')))
             source = next(w for w in self.widgets() if isinstance(w, self.ttk.Combobox)
                           and '全部来源' in w.cget('values'))
             with patch.object(ui, 'list_rows', side_effect=slow):
@@ -439,6 +445,31 @@ class ViewerInteractionTests(unittest.TestCase):
             self.exercise(interact)
         finally:
             release.set()
+
+    def test_cached_rows_are_available_while_initial_discovery_is_still_running(self):
+        entered, release = threading.Event(), threading.Event()
+        collect = ah.collect
+        def delayed(*args, **kwargs):
+            entered.set()
+            release.wait(10)
+            return collect(*args, **kwargs)
+        def interact(root):
+            self.wait(entered.is_set)
+            tree = next(w for w in self.widgets() if isinstance(w, self.ttk.Treeview) and 'check' in w.cget('columns'))
+            self.wait(lambda: len(tree.get_children()) == 2)
+            self.assertFalse(release.is_set())
+            tree.selection_set(next(item for item in tree.get_children() if 'one.jsonl' in item))
+            self.wait_reader()
+            self.assertTrue(any('400 / 450' in status for status in self.statuses()))
+            self.assertTrue(self.button('打开终端并继续').instate(['disabled']))
+            release.set()
+            self.wait(lambda: not any('正在索引历史…' in status for status in self.statuses()))
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        with patch.object(ah, 'collect', side_effect=delayed):
+            try:
+                self.exercise(interact)
+            finally:
+                release.set()
 
     def test_stale_reservation_disables_launch_with_recovery_instruction(self):
         import launch_jobs

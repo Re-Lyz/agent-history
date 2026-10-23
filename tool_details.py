@@ -29,8 +29,23 @@ def read(locator):
     stat = path.stat()
     if (stat.st_size, stat.st_mtime_ns) != tuple(locator['stamp']):
         raise ValueError('工具原记录已变化，请刷新对话后展开。')
-    record = next((value for ordinal, value in enumerate(ci.records(path))
-                   if ordinal == locator['ordinal']), None)
+    if locator.get('offset') is not None:
+        offset = locator['offset']
+        if not isinstance(offset, int) or isinstance(offset, bool) or offset < 0 or offset >= stat.st_size:
+            raise ValueError('工具原记录位置无效，请刷新对话。')
+        with path.open('rb') as stream:
+            if offset:
+                stream.seek(offset - 1)
+                if stream.read(1) != b'\n':
+                    raise ValueError('工具原记录位置无效，请刷新对话。')
+            stream.seek(offset)
+            line = stream.readline()
+            if not line.endswith(b'\n'):
+                raise ValueError('工具原记录尚未完整写入，请稍后刷新。')
+            record = json.loads(line)
+    else:
+        record = next((value for ordinal, value in enumerate(ci.records(path))
+                       if ordinal == locator['ordinal']), None)
     if record is None:
         raise ValueError('工具原记录已不存在。')
     if locator['tool'] == 'codex':

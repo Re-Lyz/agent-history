@@ -115,7 +115,10 @@ def create_mixin(bindings, desktop):
                         self.last_launch_report = report
                         self.launch_status.set(launch_jobs.describe(report))
                         if report.get('sync_state') == 'collected' and report['state'] in ('exited', 'failed'):
-                            self.background(self.reindex, self.after_reindex, label='正在读取续聊内容…', key='handoff-sync')
+                            # The runner already indexed and verified this exit.
+                            # Reload the view without scanning/syncing every chat again.
+                            self.background(support.review_snapshot, self.after_reindex,
+                                            label='正在读取续聊内容…', key='handoff-sync')
                 except TimeoutError:
                     pass  # The runner is publishing a report; try next tick.
                 except (ValueError, OSError) as error:
@@ -145,13 +148,27 @@ def create_mixin(bindings, desktop):
             latest_job = self.launch_job
             def work():
                 import handoff_lifecycle
-                with trash.locked_db() as db:
+                # finish reads the owned native files directly and indexes after
+                # publication. Avoid the context manager's before/after scans.
+                with trash.locked_db(reindex=False) as db:
                     identity = bindings.recovery_job(db, selected, None if allow_branch else latest_job)
                     if allow_branch and not identity:
                         raise ValueError('请先选择要保存的临时续聊分支。')
                     outcome = handoff_lifecycle.retry_pending(db, manual=True, allow_branch=allow_branch, identity=identity) \
                         if identity else dict(completed=0, pending=0)
-                return outcome, self.reindex(), identity
+                    if identity and outcome['pending']:
+                        # A blocked retry may still have saved messages. Show
+                        # them without retrying all unrelated pending jobs.
+                        import single_conversation
+                        report = launch_jobs.read(identity)
+                        paths = single_conversation.collection_paths(db, report['conversation']) \
+                            if report.get('single_head') and report.get('conversation') else None
+                        ah.collect(db, only_paths=paths or None)
+                handled = outcome['completed'] or outcome['pending']
+                # Brand-new sessions may have a report but no conversation
+                # reservation yet. They still need discovery through reindex.
+                snapshot = support.review_snapshot() if handled else self.reindex()
+                return outcome, snapshot, identity
             def done(result):
                 outcome, snapshot, identity = result
                 if identity:

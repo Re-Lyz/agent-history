@@ -28,7 +28,7 @@ MESSAGE_LIMIT = 400
 LIST_PAGE = 500
 
 
-from launch_backend import (file_messages, physical_row, transcript_stamp, launch_targets,
+from launch_backend import (file_messages, file_message_page, physical_row, transcript_stamp, launch_targets,
                             command_label, original_of, launch_plan, claude_copy,
                             terminal_command, start_terminal)
 import launch_backend as launcher
@@ -236,6 +236,9 @@ def run_ui():
             root.after(100, self.poll)
             root.after(1000, self.poll_launch_report)
             self.background(self.initial_load, self.after_initial, label='正在索引历史…', key='initial')
+            # Render the last collected read model while discovery runs. Opening
+            # or launching a row still verifies its current native file and lock.
+            self.refresh()
             root.bind('<Control-f>', self.focus_find)
 
         def remember_geometry(self, event):
@@ -265,6 +268,9 @@ def run_ui():
                 # A preference failure must not block exit with a modal dialog.
                 support.log_error('Saving viewer preferences on close', error)
             finally:
+                self.reader_request = getattr(self, 'reader_request', 0) + 1
+                self.list_request = getattr(self, 'list_request', 0) + 1
+                self.render_request = getattr(self, 'render_request', 0) + 1
                 try:
                     for callback in self.root.tk.call('after', 'info'):
                         # Tk timers can contain Tcl lists, not Python command names.
