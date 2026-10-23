@@ -1390,6 +1390,42 @@ class ViewerInteractionTests(unittest.TestCase):
             finally:
                 release.set()
 
+    def test_stale_launch_choices_cannot_enable_launch_while_new_selection_is_loading(self):
+        plan_started, read_started = threading.Event(), threading.Event()
+        release_plan, release_read = threading.Event(), threading.Event()
+        actual_read, actual_plan = ui.file_message_page, ui.launch_plan
+        def read(row, *args, **kwargs):
+            if row['id'] == 'one':
+                read_started.set()
+                release_read.wait(5)
+            return actual_read(row, *args, **kwargs)
+        def plan(db, row, *args, **kwargs):
+            if row['id'] == 'two':
+                plan_started.set()
+                release_plan.wait(5)
+            return actual_plan(db, row, *args, **kwargs)
+        def interact(root):
+            app = root.history_app
+            self.wait(lambda: len(app.tree.get_children()) == 2 and bool(app.target_labels))
+            app.tree.selection_set(next(iid for iid in app.tree.get_children() if 'two.jsonl' in iid))
+            self.wait(plan_started.is_set)
+            app.tree.selection_set(next(iid for iid in app.tree.get_children() if 'one.jsonl' in iid))
+            self.wait(read_started.is_set)
+            release_plan.set()
+            self.wait(lambda: not any(job[0] == 'launch-preview' for job in app.jobs.values()))
+            self.assertIsNone(app.reader_stamp)
+            self.assertTrue(self.button('打开终端并继续').instate(['disabled']))
+            release_read.set()
+            self.wait_reader()
+            self.assertIn('one.jsonl', app.info.get())
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        with patch.object(ui, 'file_message_page', side_effect=read), patch.object(ui, 'launch_plan', side_effect=plan):
+            try:
+                self.exercise(interact)
+            finally:
+                release_plan.set()
+                release_read.set()
+
     def test_search_navigates_distant_matches_without_rendering_the_entire_transcript(self):
         path = self.path / 'a' / 'sessions' / 'one.jsonl'
         records = [dict(type='session_meta', payload=dict(id='one', cwd=str(self.path), source='cli'))]

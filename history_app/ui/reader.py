@@ -202,9 +202,8 @@ def create_mixin(bindings, desktop):
             total = getattr(self, 'reader_total', None) or (None if more else count)
             displayed = count if prepend else shown
             label = f'{displayed} / {total}' if total is not None else str(displayed)
-            if getattr(self, 'reader_window', None):
-                label += f' · 第 {start + 1}–{stop} 条'
-            self.message_count.set(f'已显示 {label} 条消息 · 工具可展开详情')
+            window_note = f' · 第 {start + 1}–{stop} 条' if getattr(self, 'reader_window', None) else ''
+            self.message_count.set(f'已显示 {label} 条消息{window_note} · 工具可展开详情')
             self.more_messages.state(['!disabled'] if more else ['disabled'])
             self.rendering = True
             started = time.monotonic()
@@ -454,6 +453,7 @@ def create_mixin(bindings, desktop):
                 return
             if request is None:
                 self.reader_request = getattr(self, 'reader_request', 0) + 1
+                self.preview_request = getattr(self, 'preview_request', 0) + 1
                 self.find_search_key = None
                 self.reader_window = None
                 self.render_request = getattr(self, 'render_request', 0) + 1
