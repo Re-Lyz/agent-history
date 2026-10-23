@@ -455,9 +455,13 @@ def create_mixin(bindings, desktop):
                 self.reader_request = getattr(self, 'reader_request', 0) + 1
                 self.preview_request = getattr(self, 'preview_request', 0) + 1
                 self.find_search_key = None
-                self.reader_window = None
-                self.render_request = getattr(self, 'render_request', 0) + 1
-                self.rendering = False
+                selection = next(iter(self.tree.selection()), None)
+                if selection != self.current_iid:
+                    self.reader_window = None
+                    self.find_targets, self.find_totals = [], []
+                    self.render_request = getattr(self, 'render_request', 0) + 1
+                    self.reader_view = None
+                    self.rendering = False
             read_request = self.reader_request
             cancel = lambda: read_request != self.reader_request
             read_query = self.search_text()

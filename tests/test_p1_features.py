@@ -241,6 +241,9 @@ class NewViewerTests(viewer_tests.ViewerInteractionTests):
             app = args[0]
             if not panels:
                 app.root.after(0, lambda: heartbeats.append(len(app.tool_panels)))
+                # A startup/list refresh can complete between render batches.
+                # The unchanged selection must finish its existing render.
+                app.root.after(0, app.refresh)
             # Make a batch boundary deterministic without asserting wall time.
             time.sleep(0.002)
             result = original_panel(*args)
