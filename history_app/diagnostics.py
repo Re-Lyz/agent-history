@@ -62,7 +62,10 @@ def diagnose(paths, deep=False):
                     status['integrity'] = 'ok' if db.execute('PRAGMA quick_check(1)').fetchone()[0] == 'ok' else 'failed'
                 if 'index_failures' in tables:
                     status['index_failures'] = db.execute('SELECT count(*) FROM index_failures').fetchone()[0]
-                status['compatibility'] = 'supported' if status['schema'] in (3, 4, 5) else 'needs-review'
+                from .storage.read_model import ready
+                db.row_factory = sqlite3.Row
+                status['read_model'] = 'ready' if ready(db) else 'upgrade-needed'
+                status['compatibility'] = 'supported' if status['schema'] in (3, 4, 5, 6) else 'needs-review'
         except (OSError, sqlite3.Error):
             status['state'] = 'unreadable'
     states, unreadable = Counter(), 0

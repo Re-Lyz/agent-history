@@ -34,6 +34,7 @@ CLAUDE_HOMES = [Path.home() / '.claude']
 CLIP = 4000          # stored length of tool calls/outputs
 SNIPPET = 90
 IMPORT_MARK = 'agent-history import'
+SCHEMA_VERSION = 6
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 CREATE TABLE IF NOT EXISTS files(path TEXT PRIMARY KEY, tool TEXT, source TEXT, session_key TEXT,
@@ -91,7 +92,11 @@ def connect():
     db = sqlite3.connect(DATA / 'history.db', timeout=30)
     db.row_factory = sqlite3.Row
     try:
-        if db.execute('PRAGMA user_version').fetchone()[0] >= 5:
+        from .read_model import ready
+        version = db.execute('PRAGMA user_version').fetchone()[0]
+        if version > SCHEMA_VERSION:
+            raise ValueError('历史数据库由更新版本的程序创建，请先更新 Agent History。')
+        if version == SCHEMA_VERSION and ready(db):
             return db
         # First-window discovery and cached-list reads can open concurrently.
         # Recheck under the shared schema lock instead of rebuilding twice.
@@ -99,7 +104,9 @@ def connect():
             if not locked:
                 raise TimeoutError('History schema upgrade is busy.')
             version = db.execute('PRAGMA user_version').fetchone()[0]
-            if version < 5:
+            if version > SCHEMA_VERSION:
+                raise ValueError('历史数据库由更新版本的程序创建，请先更新 Agent History。')
+            if version < SCHEMA_VERSION or not ready(db):
                 upgrade(db, version)
         return db
     except Exception:
@@ -110,9 +117,13 @@ def connect():
 def upgrade(db, version):
     import conversation_titles
     if version >= 2:
-        from .read_model import SCHEMA as READ_SCHEMA
-        db.executescript('BEGIN IMMEDIATE;\n' + conversation_titles.SCHEMA + READ_SCHEMA +
-                        '\nCREATE INDEX IF NOT EXISTS files_session ON files(session_key);\nPRAGMA user_version=5;\nCOMMIT;')
+        from .read_model import SCHEMA as READ_SCHEMA, ready
+        # A complete v5 read model needs only the version bump. Incomplete v5
+        # prototypes rebuild their derived index while logical data stays put.
+        read_schema = '' if ready(db) else READ_SCHEMA
+        db.executescript('BEGIN IMMEDIATE;\n' + conversation_titles.SCHEMA + read_schema +
+                        '\nCREATE INDEX IF NOT EXISTS files_session ON files(session_key);\n'
+                        f'PRAGMA user_version={SCHEMA_VERSION};\nCOMMIT;')
         return
     db.executescript(SCHEMA)
     db.executescript(codex_import.SCHEMA)
@@ -126,7 +137,8 @@ def upgrade(db, version):
     db.executescript(conversation_titles.SCHEMA)
     from .read_model import SCHEMA as READ_SCHEMA
     db.executescript('BEGIN IMMEDIATE;\n' + READ_SCHEMA +
-                    '\nCREATE INDEX IF NOT EXISTS files_session ON files(session_key);\nPRAGMA user_version=5;\nCOMMIT;')
+                    '\nCREATE INDEX IF NOT EXISTS files_session ON files(session_key);\n'
+                    f'PRAGMA user_version={SCHEMA_VERSION};\nCOMMIT;')
 
 
 from history_app.locks import file_lock

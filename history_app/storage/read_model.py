@@ -2,6 +2,30 @@
 import json
 from pathlib import Path
 
+REQUIRED_TABLES = frozenset(('file_views', 'file_view_parts', 'file_views_fts', 'file_view_parts_fts',
+    'file_view_search_coverage', 'file_view_part_coverage', 'file_view_incremental', 'index_failures', 'logical_clock'))
+REQUIRED_TRIGGERS = frozenset(('file_view_parts_ai', 'file_view_parts_ad', 'file_views_bi', 'file_views_ai',
+    'file_views_ad', 'file_views_au', 'file_views_legacy_au', 'logical_versions_ai', 'logical_versions_au',
+    'logical_versions_ad', 'logical_active_au', 'logical_merges_ai', 'logical_merges_au', 'logical_merges_ad'))
+
+
+def ready(db):
+    """An early v5 prototype had the same number but a different FTS contract.
+
+    Check the actual read-model objects before permitting a cached-list query.
+    This never reads transcript data or changes logical conversation records.
+    """
+    objects = {(row['type'], row['name']): row['sql'] for row in db.execute(
+        "SELECT type,name,sql FROM sqlite_master WHERE type IN ('table','trigger')")}
+    if any(('table', name) not in objects for name in REQUIRED_TABLES) or \
+            any(('trigger', name) not in objects for name in REQUIRED_TRIGGERS):
+        return False
+    for name, content in (('file_views_fts', 'file_views'), ('file_view_parts_fts', 'file_view_parts')):
+        sql = ''.join((objects['table', name] or '').lower().split()).replace('"', "'")
+        if "content='" + content + "'" not in sql:
+            return False
+    return True
+
 SCHEMA = '''
 DROP TRIGGER IF EXISTS file_views_bi;
 DROP TRIGGER IF EXISTS file_views_ai;
