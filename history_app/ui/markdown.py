@@ -146,7 +146,7 @@ def _parse(source):
             language = token.info.strip().split()[0] if token.info.strip() else ''
             if kind == 'fence' and language.lower() in ('math', 'latex', 'tex'):
                 output.append(Formula(token.markup + token.info + '\n' + token.content + token.markup,
-                                      token.content, True, tuple(styles)))
+                                      formulas.fenced_latex(token.content), True, tuple(styles)))
             else:
                 output.append(Code(token.content, language, tuple(styles)))
         elif kind == 'math_block':

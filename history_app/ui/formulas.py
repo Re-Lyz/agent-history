@@ -53,6 +53,16 @@ def _closing_position(source, closing, start, end):
     return -1
 
 
+def fenced_latex(source):
+    """Math fences may also contain one complete pair of TeX delimiters."""
+    value = source.strip()
+    for opening, closing in (('$$', '$$'), ('$', '$'), (r'\[', r'\]'), (r'\(', r'\)')):
+        if value.startswith(opening) and value.endswith(closing) and \
+                _closing_position(value, closing, len(opening), len(value)) == len(value) - len(closing):
+            return value[len(opening):-len(closing)]
+    return source
+
+
 def _bracket_inline(state, silent):
     """Adapt LaTeX delimiters to Markdown tokens, before Markdown escapes them."""
     start = state.pos

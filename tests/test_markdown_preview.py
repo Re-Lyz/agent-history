@@ -43,6 +43,12 @@ class MarkdownTests(unittest.TestCase):
         self.assertEqual(math[5].latex, '\\sqrt{x}\n')
         table = next(e for e in elements if isinstance(e, md.Table))
         self.assertIsInstance(table.rows[1][0][0], md.Formula)
+        latex = r'\frac{1}{2}'
+        for body in ('$$' + latex + '$$', '$' + latex + '$', r'\[' + latex + r'\]', r'\(' + latex + r'\)'):
+            fenced = next(e for e in md.parse('```latex\n' + body + '\n```') if isinstance(e, md.Formula))
+            self.assertEqual(fenced.latex, latex)
+            self.assertIn(body, fenced.text)
+        self.assertEqual(md.formulas.fenced_latex('$x$ and $y$'), '$x$ and $y$')
 
     def test_math_does_not_consume_currency_code_escapes_or_trailing_text(self):
         source = r'价格 $5 和 $10，\$20；`$x$`；未闭合 $x；\(未闭合' + '\n\n' \
