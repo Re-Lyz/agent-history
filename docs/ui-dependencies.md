@@ -18,12 +18,14 @@ python -m pip install -r requirements-ui.txt
 | mdit-py-cjk-friendly | 中文标点相邻的加粗／斜体解析 | MIT | — | — |
 | mdit-py-plugins | `$`／`$$` 公式解析 | MIT | — | — |
 | Ziamath、ziafont、latex2mathml | 将 TeX 转为 MathML 并以数学字体绘制 SVG 路径 | MIT | — | — |
-| resvg-py / resvg | 本机将生成的 SVG 路径转为 PNG | MIT / MPL-2.0 | — | — |
+| resvg-py / resvg | 本机将生成的 SVG 路径转为 PNG | MIT / (MIT OR Apache-2.0) | — | — |
 | STIX Two Math（Ziamath 随包提供） | 数学字体 | SIL OFL-1.1 | — | — |
 
 解析接口见 [markdown-it-py 文档](https://markdown-it-py.readthedocs.io/en/latest/using.html)，高亮接口见 [Pygments 文档](https://pygments.org/docs/quickstart/)。中文扩展见 [mdit-py-cjk-friendly](https://pypi.org/project/mdit-py-cjk-friendly/)，数学接口见 [mdit-py-plugins](https://mdit-py-plugins.readthedocs.io/en/latest/)、[Ziamath](https://ziamath.readthedocs.io/en/latest/) 和 [resvg-py](https://resvg-py.readthedocs.io/en/latest/api.html)。许可按随包附带的 LICENSE 核对；markdown-it-py 另包含上游 markdown-it 的 MIT 许可。
 
 数学预览改动在 Windows 当前环境验证 markdown-it-py 2.2.0、Pygments 2.15.1、mdit-py-cjk-friendly 0.3.0、mdit-py-plugins 0.6.1、Ziamath 0.13、ziafont 0.11、latex2mathml 3.81.1 和 resvg-py 0.5.0。由于中文扩展要求 markdown-it-py <4，安装范围收窄为 2.2 至 3.x；此前 beta 的 4.2.0 记录仅代表当时版本。具体依赖边界见 requirements-ui.txt，范围内其他版本仍需运行项目检查。
+
+resvg-py 0.5.0 内嵌 resvg 0.48.1，其上游采用 [MIT 或 Apache-2.0 双许可](https://github.com/linebender/resvg/tree/v0.48.1#license)；Python 绑定自身采用 MIT。
 
 另在全新 Windows venv 中安装 requirements-ui.txt，验证 markdown-it-py 3.0.0、Pygments 2.21.0 和 mdurl 0.1.2，其余新增组件与上述版本一致；解析、真实 Tk 阅读／复制／搜索和安装器预检通过。这不等同于全新操作系统验收。
 
