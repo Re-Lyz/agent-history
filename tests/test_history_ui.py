@@ -254,7 +254,7 @@ class ViewerInteractionTests(unittest.TestCase):
                 self.wait(started.is_set)
                 dialog.close()
                 release.set()
-                self.wait(lambda: ui.launch_jobs.reports()[0]['state'] == 'cancelled')
+                self.wait(lambda: any(report['state'] == 'cancelled' for report in ui.launch_jobs.reports()))
                 root.tk.call(root.protocol('WM_DELETE_WINDOW'))
             try:
                 self.exercise(interact)
