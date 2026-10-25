@@ -579,6 +579,105 @@ class ViewerInteractionTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), original)
         self.assertEqual(support.load_preferences()['preview_mode'], 'markdown')
 
+    @unittest.skipUnless(md.available(), 'Install requirements-ui.txt for Markdown UI verification.')
+    def test_math_background_render_copy_search_raw_switch_and_cjk_bold(self):
+        path = self.path / 'a' / 'sessions' / 'two.jsonl'
+        source = '前文**“重点”**后文，**加粗：**文字。行内 \\(\\frac{1}{2}\\)。\n\n' \
+                 '$$\n\\begin{pmatrix}a&b\\\\c&d\\end{pmatrix}\n$$\n\n' \
+                 '| 数学 |\n| --- |\n| $x_1$ |\n\n' \
+                 '$$\\frac{1}$$\n\n```python\nprint("$x$ **代码**")\n```'
+        records = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+        records[1]['payload']['content'][0]['text'] = source
+        path.write_text(''.join(json.dumps(record, ensure_ascii=False) + '\n' for record in records), encoding='utf-8')
+        original = path.read_bytes()
+        threads = []
+        render = md.formulas.render
+        def record_thread(*args, **kwargs):
+            threads.append(threading.get_ident())
+            return render(*args, **kwargs)
+        def interact(root):
+            root.deiconify()
+            app = root.history_app
+            tree = app.tree
+            self.wait(lambda: len(tree.get_children()) == 2)
+            tree.selection_set(next(item for item in tree.get_children() if 'two.jsonl' in item))
+            self.wait_reader()
+            reader, renderer = app.text, app.markdown_renderer
+            self.assertEqual(len(renderer.math_widgets), 3)
+            self.assertTrue(all(label.image.width() > 0 for label in renderer.math_widgets))
+            self.assertTrue(threads)
+            self.assertNotIn(threading.get_ident(), threads)
+            self.assertIn('前文“重点”后文，加粗：文字', reader.get('1.0', 'end'))
+            start = reader.search('“重点”', '1.0')
+            self.assertTrue(any('bold' in str(reader.tag_cget(tag, 'font'))
+                                for tag in reader.tag_names(start) if tag.startswith('md_font_')))
+            self.assertTrue(reader.tag_ranges('md_math_source'))
+            self.assertIn('暂不支持此公式', reader.get('1.0', 'end'))
+            first = renderer.math_widgets[0]
+            first.event_generate('<Button-1>')
+            self.assertEqual(root.clipboard_get(), r'\frac{1}{2}')
+            self.button('复制公式').invoke()
+            self.assertEqual(root.clipboard_get().strip(), r'\begin{pmatrix}a&b\\c&d\end{pmatrix}')
+            # Hidden notation is still present for selection/copy and exact search.
+            reader.tag_add('sel', '1.0', 'end-1c')
+            reader.event_generate('<<Copy>>')
+            self.assertIn(r'\(\frac{1}{2}\)', root.clipboard_get())
+            find = next(w for w in self.widgets() if w.winfo_name() == 'conversation_find')
+            find.insert(0, 'pmatrix')
+            self.wait_reader()
+            self.assertTrue(reader.tag_ranges('find_current'))
+            self.assertEqual(renderer.math_widgets[1].cget('background'), ui.PALETTE['accent_soft'])
+            find.delete(0, 'end')
+            self.wait_reader()
+            self.assertEqual(renderer.math_widgets[1].cget('background'), ui.PALETTE['card'])
+            mode = next(w for w in self.widgets() if w.winfo_name() == 'preview_mode')
+            mode.set('原文')
+            mode.event_generate('<<ComboboxSelected>>')
+            self.wait_reader()
+            self.assertIn(source, reader.get('1.0', 'end'))
+            self.assertFalse(renderer.math_widgets)
+            self.assertFalse(first.winfo_exists())
+            mode.set('Markdown')
+            mode.event_generate('<<ComboboxSelected>>')
+            self.wait_reader()
+            self.assertEqual(len(renderer.math_widgets), 3)
+            self.assertEqual(path.read_bytes(), original)
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        with patch.object(md.formulas, 'render', side_effect=record_thread), \
+                patch('urllib.request.urlopen') as fetch, patch.object(ui.webbrowser, 'open') as browser:
+            self.exercise(interact)
+            fetch.assert_not_called()
+            browser.assert_not_called()
+        self.assertEqual(path.read_bytes(), original)
+
+    @unittest.skipUnless(md.available(), 'Install requirements-ui.txt for Markdown UI verification.')
+    def test_loading_earlier_math_preserves_existing_widgets_and_source(self):
+        path = self.path / 'a' / 'sessions' / 'one.jsonl'
+        records = [json.loads(line) for line in path.read_text(encoding='utf-8').splitlines()]
+        records[1]['payload']['content'][0]['text'] = r'最早 $x_0$'
+        records[-1]['payload']['content'][0]['text'] = r'最后 $y_{449}$'
+        path.write_text(''.join(json.dumps(record, ensure_ascii=False) + '\n' for record in records), encoding='utf-8')
+        original = path.read_bytes()
+        def interact(root):
+            root.deiconify()
+            app = root.history_app
+            self.wait(lambda: len(app.tree.get_children()) == 2)
+            app.tree.selection_set(next(item for item in app.tree.get_children() if 'one.jsonl' in item))
+            self.wait_reader()
+            self.assertEqual(len(app.markdown_renderer.math_widgets), 1)
+            last = app.markdown_renderer.math_widgets[0]
+            app.load_earlier()
+            self.wait_reader()
+            self.assertEqual(len(app.markdown_renderer.math_widgets), 2)
+            self.assertIs(app.markdown_renderer.math_widgets[0], last)
+            self.assertTrue(last.winfo_exists())
+            text = app.text.get('1.0', 'end')
+            self.assertEqual(text.count('$x_0$'), 1)
+            self.assertEqual(text.count('$y_{449}$'), 1)
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        self.exercise(interact)
+        self.assertEqual(path.read_bytes(), original)
+
     def test_missing_markdown_dependencies_fall_back_to_raw_text(self):
         def interact(root):
             root.deiconify()

@@ -131,7 +131,7 @@ def create_mixin(bindings, desktop):
         def copy_code(self, code):
             self.root.clipboard_clear()
             self.root.clipboard_append(code)
-            self.render_info.set('代码已复制')
+            self.render_info.set('内容已复制')
 
         def open_link(self, url):
             if markdown.clickable_url(url):
@@ -181,10 +181,14 @@ def create_mixin(bindings, desktop):
             if getattr(self, 'reader_window', None) and not prepend:
                 more = start > 0
             large = sum(len(row['text'] or '') for row in self.reader_messages[start:stop]) > 50_000
-            if large and prepared is None and self.preview_mode.get() == 'Markdown':
+            math = any(markdown.formulas.might_have_math(row['text'] or '') for row in self.reader_messages[start:stop]
+                       if row['role'] in ('user', 'assistant', 'agent'))
+            if (large or math) and prepared is None and self.preview_mode.get() == 'Markdown':
                 messages = list(self.reader_messages)
+                math_options = self.markdown_renderer.math_options()
                 def prepare():
-                    result, highlights = {}, {}
+                    result, highlights, rasters = {}, {}, {}
+                    pixels = 0
                     for index in range(start, stop):
                         checkpoint(lambda: request != self.render_request)
                         row = messages[index]
@@ -192,10 +196,20 @@ def create_mixin(bindings, desktop):
                             elements = markdown.parse(row['text'] or '')
                             result[index] = elements
                             for element in elements:
+                                checkpoint(lambda: request != self.render_request)
                                 if isinstance(element, markdown.Code):
                                     key = (element.text, element.language)
                                     highlights[key] = tuple(markdown.highlighted(*key))
-                    return result, highlights
+                                cells = (span for row in element.rows for cell in row for span in cell) \
+                                    if isinstance(element, markdown.Table) else (element,)
+                                for span in cells:
+                                    if isinstance(span, markdown.Formula) and span not in rasters:
+                                        checkpoint(lambda: request != self.render_request)
+                                        raster = markdown.formulas.render(span, **math_options) if pixels < 8_000_000 else None
+                                        rasters[span] = raster
+                                        if raster:
+                                            pixels += raster.width * raster.height
+                    return result, highlights, rasters
                 self.background(prepare, lambda result: self.show_messages(position, result, request, anchor, prepend),
                                 label='准备对话排版…', key='markdown', replace=True, refresh_preview=False)
                 return
@@ -261,7 +275,7 @@ def create_mixin(bindings, desktop):
                             if tag == 'body' and self.preview_mode.get() == 'Markdown':
                                 if prepared:
                                     yield from self.markdown_renderer.iter_render(row['text'] or '',
-                                        prepared[0].get(index), prepared[1])
+                                        prepared[0].get(index), prepared[1], prepared[2])
                                 else:
                                     yield from self.markdown_renderer.iter_render(row['text'] or '')
                             else:
@@ -322,6 +336,7 @@ def create_mixin(bindings, desktop):
             self.text.tag_remove('find_current', '1.0', 'end')
             self.find_matches, self.find_index = [], -1
             query = self.find_query.get()
+            self.markdown_renderer.highlight_math(query)
             if query and getattr(self.reader_messages, 'has_more', False):
                 self.find_status.set('正在搜索完整对话…')
                 self.load_full_reader()
@@ -366,7 +381,7 @@ def create_mixin(bindings, desktop):
                 if key != self.find_search_key or render_request != self.render_request:
                     return
                 for _ in range(100):
-                    match = self.text.search(query, start, stopindex='end', nocase=True, exact=True, count=count)
+                    match = self.text.search(query, start, stopindex='end', nocase=True, exact=True, count=count, elide=True)
                     if not match:
                         self.finish_find()
                         return

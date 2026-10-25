@@ -7,6 +7,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 import re
 from urllib.parse import unquote, urlsplit
+from . import formulas
+from .formulas import Formula
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,8 @@ def available():
     try:
         import markdown_it
         import pygments
+        import mdit_py_cjk_friendly
+        import mdit_py_plugins.dollarmath
         return True
     except ImportError:
         return False
@@ -93,12 +97,15 @@ def inline_spans(tokens, base=()):
             spans.append(Span('\n', tuple(styles)))
         elif kind == 'image':
             spans.append(Span(f'［图片：{token.content or "无说明"} · 未加载］', tuple(styles) + ('image',)))
+        elif kind in ('math_inline', 'math_inline_double'):
+            spans.append(formulas.from_token(token, tuple(styles), links[-1] if links else ''))
     return tuple(spans)
 
 
 def _parse(source):
     from markdown_it import MarkdownIt
     parser = MarkdownIt('commonmark', dict(html=False, linkify=False)).enable(['table', 'strikethrough'])
+    formulas.configure_parser(parser)
     validate = parser.validateLink
     parser.validateLink = lambda target: validate(target) or local_path(target) is not None
     tokens = parser.parse(source)
@@ -136,7 +143,14 @@ def _parse(source):
         elif kind == 'inline':
             output.extend(inline_spans(token.children, tuple(styles)))
         elif kind in ('fence', 'code_block'):
-            output.append(Code(token.content, token.info.strip().split()[0] if token.info.strip() else '', tuple(styles)))
+            language = token.info.strip().split()[0] if token.info.strip() else ''
+            if kind == 'fence' and language.lower() in ('math', 'latex', 'tex'):
+                output.append(Formula(token.markup + token.info + '\n' + token.content + token.markup,
+                                      token.content, True, tuple(styles)))
+            else:
+                output.append(Code(token.content, language, tuple(styles)))
+        elif kind == 'math_block':
+            output.append(formulas.from_token(token, tuple(styles)))
         elif kind == 'hr':
             output.append(Span('────────────────────────\n\n', ('rule',)))
         elif kind == 'table_open':
@@ -195,6 +209,9 @@ class TkRenderer:
         self.text, self.palette, self.font = text, palette, font
         self.copy_code, self.open_link = copy_code, open_link
         self.widgets, self.dynamic_tags, self.commands = [], [], []
+        self.math_widgets, self.math_pixels = [], 0
+        # Native Tk's copy excludes elided text, which would drop formula sources.
+        text.bind('<<Copy>>', self.copy_selection)
         self.font_tags = {}
         self.table_font = tkfont.Font(root=text, family='Consolas', size=10, weight='bold')
         text.tag_configure('md_quote', foreground=palette['muted'])
@@ -205,6 +222,7 @@ class TkRenderer:
         text.tag_configure('md_paragraph_end', spacing3=6)
         text.tag_configure('md_rule', foreground=palette['line'])
         text.tag_configure('md_image', foreground=palette['muted'])
+        text.tag_configure('md_math_source', elide=True)
         text.tag_configure('md_table', wrap='none', background=palette['code_bg'], spacing1=3, spacing3=3)
         text.tag_configure('md_table_header', background=palette['accent_soft'])
         for name, color in dict(comment=palette['muted'], keyword='#7663a1', string='#557953',
@@ -219,12 +237,19 @@ class TkRenderer:
         for widget in self.widgets:
             widget.destroy()
         self.widgets.clear()
+        self.math_widgets.clear()
+        self.math_pixels = 0
         for tag in self.dynamic_tags:
             self.text.tag_delete(tag)
         self.dynamic_tags.clear()
         for command in self.commands:
             self.text.deletecommand(command)
         self.commands.clear()
+
+    def copy_selection(self, event=None):
+        if self.text.tag_ranges('sel'):
+            self.copy_code(self.text.get('sel.first', 'sel.last'))
+        return 'break'
 
     def font_tag(self, styles):
         styles = tuple(sorted(set(styles)))
@@ -247,7 +272,7 @@ class TkRenderer:
                 tags += ['md_quote', 'md_' + name]
             elif name.startswith('list_'):
                 tags.append('md_' + name)
-            elif name in ('inline_code', 'strike', 'rule', 'image', 'code', 'table', 'table_header', 'paragraph_end'):
+            elif name in ('inline_code', 'strike', 'rule', 'image', 'code', 'table', 'table_header', 'paragraph_end', 'math_source'):
                 tags.append('md_' + name)
         tags.append(self.font_tag(styles))
         if span.href and (clickable_url(span.href) or local_path(span.href) is not None):
@@ -267,11 +292,59 @@ class TkRenderer:
         for _ in self.iter_render(source):
             pass
 
-    def iter_render(self, source, elements=None, highlights=None):
+    def math_options(self):
+        return dict(size=round(11 * float(self.text.tk.call('tk', 'scaling')), 1), color=self.palette['text'])
+
+    def insert_formula(self, element, rasters=None, extra=()):
+        import tkinter as tk
+        from tkinter import ttk
+        raster = rasters.get(element) if rasters is not None else formulas.render(element, **self.math_options())
+        if raster is None or not raster.png or self.math_pixels + raster.width * raster.height > 8_000_000:
+            self.insert(Span(element.text, element.styles + ('inline_code',) + extra, element.href))
+            if element.display:
+                self.insert(Span('\n［' + (raster.error if raster and raster.error else '公式预览达到上限，显示原式') + '］\n', ('image',)))
+            return
+        if element.display and self.text.get(self.position() + ' linestart', self.position()).strip():
+            self.insert(Span('\n', element.styles + extra))
+        image = tk.PhotoImage(master=self.text, data=raster.png)
+        background = self.palette['accent_soft'] if 'table_header' in extra else \
+            self.palette['code_bg'] if 'table' in extra else self.palette['card']
+        label = tk.Label(self.text, image=image, bg=background, borderwidth=0,
+                         highlightthickness=0, cursor='hand2', takefocus=True)
+        label.image, label.formula, label.normal_background = image, element, background
+        label.bind('<Button-1>', lambda event: self.copy_code(element.latex))
+        label.bind('<Return>', lambda event: self.copy_code(element.latex))
+        self.widgets.append(label)
+        self.math_widgets.append(label)
+        self.math_pixels += raster.width * raster.height
+        start = self.position()
+        self.text.window_create(getattr(self, 'index', 'end'), window=label, padx=2, align='center')
+        source_start = self.position()
+        self.text.tag_remove('md_math_source', start, source_start)
+        # Original notation remains in Text for selection, copying and exact search.
+        self.insert(Span(element.text, element.styles + extra + ('math_source',), element.href))
+        for tag in self.text.tag_names(source_start):
+            if tag != 'md_math_source':
+                self.text.tag_add(tag, start, source_start)
+        if element.display:
+            button = ttk.Button(self.text, text='复制公式', style='Soft.TButton',
+                                command=lambda: self.copy_code(element.latex))
+            self.widgets.append(button)
+            self.text.window_create(getattr(self, 'index', 'end'), window=button, padx=6)
+            self.insert(Span('\n', element.styles + extra))
+
+    def highlight_math(self, query):
+        for label in self.math_widgets:
+            label.configure(bg=self.palette['accent_soft'] if query and query.casefold() in label.formula.text.casefold()
+                            else label.normal_background)
+
+    def iter_render(self, source, elements=None, highlights=None, rasters=None):
         from tkinter import ttk
         for element in parse(source) if elements is None else elements:
             if isinstance(element, Span):
                 self.insert(element)
+            elif isinstance(element, Formula):
+                self.insert_formula(element, rasters)
             elif isinstance(element, Code):
                 self.insert(Span((element.language or '代码') + '  ', element.styles + ('code',)))
                 button = ttk.Button(self.text, text='复制代码', style='Soft.TButton',
@@ -290,18 +363,22 @@ class TkRenderer:
                     self.insert(Span('\n', element.styles + ('code',)))
                 self.insert(Span('\n'))
             else:
-                yield from self.iter_table(element)
+                yield from self.iter_table(element, rasters)
             yield
 
     def render_table(self, table):
         for _ in self.iter_table(table):
             pass
 
-    def iter_table(self, table):
+    def iter_table(self, table, rasters=None):
         widths = [0] * len(table.alignments)
         for row in table.rows:
             for index, cell in enumerate(row):
-                widths[index] = max(widths[index], self.table_font.measure(''.join(span.text for span in cell)) + 24)
+                width = 0
+                for span in cell:
+                    raster = rasters.get(span) if rasters is not None and isinstance(span, Formula) else None
+                    width += raster.width + 4 if raster and raster.png else self.table_font.measure(span.text)
+                widths[index] = max(widths[index], width + 24)
             yield
         tag = f'md_columns_{len(self.dynamic_tags)}'
         self.dynamic_tags.append(tag)
@@ -316,7 +393,11 @@ class TkRenderer:
             for cell in row:
                 self.insert(Span('\t', table.styles + ('table',)))
                 for span in cell:
-                    self.insert(span, table.styles + ('table',) + (('table_header',) if row_index == 0 else ()))
+                    extra = table.styles + ('table',) + (('table_header',) if row_index == 0 else ())
+                    if isinstance(span, Formula):
+                        self.insert_formula(span, rasters, extra)
+                    else:
+                        self.insert(span, extra)
             self.insert(Span('\n', table.styles + ('table',)))
             self.text.tag_add(tag, start, self.position())
             yield

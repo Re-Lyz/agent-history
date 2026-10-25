@@ -14,6 +14,10 @@ The standard license text is documented by the [Open Source Initiative](https://
 | markdown-it-py (including upstream markdown-it notices) | Markdown parser | MIT | No; installed by pip |
 | mdurl | Parser dependency | MIT | No; installed by pip |
 | Pygments | Syntax highlighting | BSD-2-Clause | No; installed by pip |
+| mdit-py-cjk-friendly / mdit-py-plugins | CJK emphasis and math tokenization | MIT | No; installed by pip |
+| Ziamath / ziafont / latex2mathml | Offline TeX and MathML layout | MIT | No; installed by pip |
+| STIX Two Math | Math font included by Ziamath | SIL OFL-1.1 | No; supplied by the dependency |
+| resvg-py / resvg | SVG paths to PNG | MIT / MPL-2.0 | No; installed by pip |
 | Codex CLI / Claude Code CLI | User-selected external Agent | Respective vendor terms | No; user installs and authenticates separately |
 
 The release ZIP contains project source, documentation, templates and synthetic tests only. The screenshot is captured from this project's real UI using generated history; its generation script additionally requires Pillow, which is a development-only dependency, not part of the product or release. No fonts, interpreter, CLI executables or dependency wheels are bundled. A future binary distribution must include notices for every component it actually bundles. See [UI dependencies](docs/ui-dependencies.md) for versions tested locally.

@@ -40,7 +40,7 @@ def remember_json(prior, manifest, path, keys, action):
 
 
 def preflight(python):
-    script = ('import sys,json,tkinter,sqlite3,markdown_it,pygments; '
+    script = ('import sys,json,tkinter,sqlite3,markdown_it,pygments,mdit_py_cjk_friendly,mdit_py_plugins.dollarmath,ziamath,resvg_py; '
               'assert sys.version_info >= (3,11), "Python 3.11+ required"; '
               'db=sqlite3.connect(":memory:"); db.execute("CREATE VIRTUAL TABLE f USING fts5(text, tokenize=trigram)"); '
               'print(json.dumps({"python":sys.executable,"version":list(sys.version_info[:3])}))')
