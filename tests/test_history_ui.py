@@ -678,6 +678,87 @@ class ViewerInteractionTests(unittest.TestCase):
         self.exercise(interact)
         self.assertEqual(path.read_bytes(), original)
 
+    def test_program_inventory_preview_redaction_pin_and_native_check_controls(self):
+        from history_app import accounts, program_maintenance, compatibility
+        identity = 'synthetic-program'
+        report = dict(version=1, programs=[dict(id=identity, path=sys.executable, requested=sys.executable,
+            tool='codex', state='ok', version='1.2.3', channel='custom', accounts=['a', 'b'])], accounts=[
+            dict(id=name, name=name, program_id=identity, home=str(self.path / name), tool='codex',
+                 daemon=dict(state='unreachable', installed='1.2.3', running=None), pinned=False,
+                 version_mismatch=False) for name in ('a', 'b')], compatibility=[])
+        plan = dict(program=report['programs'][0], steps=[dict(stage='cli')])
+        original = (self.path / 'a/sessions/two.jsonl').read_bytes()
+        def interact(root):
+            root.deiconify()
+            self.button('诊断与维护').invoke()
+            window = root.history_app.maintenance_window
+            self.wait(lambda: not window.running)
+            self.assertTrue(window.update_program_button.instate(['disabled']))
+            self.button('扫描程序与账户').invoke()
+            self.wait(lambda: not window.running)
+            self.assertTrue(window.program_tree.exists(identity), window.status.get())
+            window.program_tree.selection_set(identity)
+            self.wait(lambda: len(window.account_tree.get_children()) == 2)
+            self.button('复制脱敏清单').invoke()
+            self.assertNotIn(str(self.path), root.clipboard_get())
+            self.assertNotIn(sys.executable, root.clipboard_get())
+            self.button('预览程序更新').invoke()
+            self.wait(lambda: not window.running)
+            self.assertTrue(window.update_program_button.instate(['!disabled']))
+            self.button('执行程序更新').invoke()
+            self.wait(lambda: not window.running)
+            apply.assert_called_once()
+            self.assertIn('partial', window.outputs['programs'].get('1.0', 'end'))
+            self.assertIsNone(window.program_report)
+            self.button('扫描程序与账户').invoke()
+            self.wait(lambda: not window.running)
+            window.program_tree.selection_set(identity)
+            self.wait(lambda: len(window.account_tree.get_children()) == 2)
+            window.account_tree.selection_set('a')
+            self.button('固定所选账户后台包').invoke()
+            self.wait(lambda: not window.running)
+            self.assertIn('a', accounts.policy(window.paths())['pinned_accounts'])
+            window.program_tree.selection_set(identity)
+            self.wait(lambda: len(window.account_tree.get_children()) == 2)
+            self.button('运行原生兼容检查').invoke()
+            self.wait(lambda: not window.running)
+            check.assert_called_once()
+            window.close()
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        with patch.object(accounts, 'inventory', return_value=report), \
+             patch.object(program_maintenance, 'preview', return_value=plan), \
+             patch.object(program_maintenance, 'apply', return_value=dict(state='partial')) as apply, \
+             patch.object(compatibility, 'check', return_value=dict(state='passed', model_requests=0)) as check:
+            self.exercise(interact)
+        self.assertEqual((self.path / 'a/sessions/two.jsonl').read_bytes(), original)
+
+    def test_project_workspace_context_copy_and_history_filter_use_existing_sources(self):
+        def interact(root):
+            root.deiconify()
+            app = root.history_app
+            self.wait_reader()
+            self.button('项目工作台').invoke()
+            window = app.workspace_window
+            self.wait(lambda: hasattr(window, 'report'))
+            self.assertEqual(window.report['total'], 1)
+            window.tree.selection_set('0')
+            self.wait(lambda: window.project.get() == str(self.path))
+            window.query.set('原始问题 two')
+            window.context()
+            self.wait(lambda: '提取时间：' in window.text.get('1.0', 'end'))
+            rendered = window.text.get('1.0', 'end')
+            self.assertIn('会话：two', rendered)
+            self.assertIn('字节：', rendered)
+            self.assertNotIn('会话：one', rendered)
+            window.copy()
+            self.assertIn('来源文件：', root.clipboard_get())
+            window.open_history()
+            self.wait_reader()
+            self.assertEqual(app.project.get(), str(self.path))
+            window.window.destroy()
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        self.exercise(interact)
+
     def test_missing_markdown_dependencies_fall_back_to_raw_text(self):
         def interact(root):
             root.deiconify()

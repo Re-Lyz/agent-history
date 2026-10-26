@@ -34,7 +34,11 @@ def diagnose(paths, deep=False):
     report['dependencies']['tk'] = importlib.util.find_spec('tkinter') is not None
     for name in ('codex', 'claude', 'powershell.exe' if os.name == 'nt' else 'xterm',
                  'schtasks.exe' if os.name == 'nt' else 'systemctl'):
-        location = shutil.which(name)
+        from . import programs
+        try:
+            location = programs.resolve(name)
+        except ValueError:
+            location = None
         report['programs'][name] = bool(location)
         if location:
             local[name] = location

@@ -1,5 +1,7 @@
 # 模块边界与兼容入口
 
+程序与工作台扩展：programs.py 统一程序解析；accounts.py 管理只读清单和可选额度缓存；program_maintenance.py、release_install.py、compatibility.py 分别负责审阅更新、校验发行回退和隔离兼容记录。workspace.py 复用既有索引／原生分页形成项目视图与带字节来源的材料，ui/workspace.py 和 ui/maintenance.py 提供界面。MCP 项目上下文入口使用只读数据库，不触发采集；运行策略与记录均在私人数据目录。
+
 history_app 按职责组织应用实现。根目录脚本保留已安装快捷方式、MCP、旧任务记录和第三方导入使用的路径。
 
 | 位置 | 职责 |

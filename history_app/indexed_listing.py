@@ -1,6 +1,7 @@
 """Page the collected read model in SQLite, preserving physical-version identity."""
 import json
 import math
+import os
 from pathlib import Path
 import sqlite3
 from collections import OrderedDict, defaultdict
@@ -16,6 +17,7 @@ from history_app.reader_data import checkpoint
 _groups = OrderedDict()
 _group_lock = threading.Lock()
 _versions = OrderedDict()
+_DEFAULT_SCOPE = object()
 
 
 def cached_groups(db, rows, cancel):
@@ -77,11 +79,31 @@ class HistoryPage(list):
         self.total = total
 
 
-def functions(db):
-    scope = setup_backend.load_sources()
+def functions(db, scope=_DEFAULT_SCOPE, homes=None):
+    scope = setup_backend.load_sources() if scope is _DEFAULT_SCOPE else scope
+    roots = {}
+    if homes is not None:
+        for source, home in homes.items():
+            values = []
+            for name in ('sessions', 'archived_sessions'):
+                path = Path(home) / name
+                values.extend((support.project_key(str(path)), support.project_key(str(path.resolve()))))
+            roots[source] = tuple(set(values))
     def enabled(tool, source, path):
-        return scope is None or (source in scope['codex'] if tool == 'codex' else
-                                 str(Path(path).parent.parent.parent) in scope['claude'])
+        selected = scope is None or (source in scope['codex'] if tool == 'codex' else
+                                     str(Path(path).parent.parent.parent) in scope['claude'])
+        if not selected or tool != 'codex' or homes is None:
+            return selected
+        permitted = roots.get(source, ())
+        def contained(value):
+            key = support.project_key(str(value))
+            return any(key.startswith(root + os.sep) for root in permitted)
+        if contained(path):
+            return True
+        try:
+            return contained(Path(path).resolve())
+        except (OSError, ValueError):
+            return False
     def number(value):
         try:
             result = float(value)
@@ -140,14 +162,20 @@ FIELDS = ('key', 'id', 'tool', 'source', 'path', 'cwd', 'title', 'started', 'upd
 
 @cancellable
 def page(db, source='', query='', include_imports=False, include_internal=False, only=None, limit=500,
-         project=None, sort_by='time', descending=True, offset=0, logical=False, cancel=None, keep_paths=None):
+         project=None, sort_by='time', descending=True, offset=0, logical=False, cancel=None, keep_paths=None,
+         scope=_DEFAULT_SCOPE, version_metadata=True, homes=None):
     if sort_by not in ('time', 'source', 'turns', 'title') or not isinstance(descending, bool):
         raise ValueError('Invalid history sort column or direction.')
     if offset < 0 or (limit is not None and limit < 0):
         raise ValueError('Invalid history page.')
     checkpoint(cancel)
-    functions(db)
-    versions(db, cancel)
+    functions(db, scope, homes)
+    if version_metadata:
+        versions(db, cancel)
+    else:
+        db.execute('CREATE TEMP TABLE IF NOT EXISTS listing_versions(path TEXT,source TEXT,identity TEXT,'
+                   'conversation TEXT,title TEXT,PRIMARY KEY(path,source))')
+        db.execute('DELETE FROM listing_versions')
     db.execute('CREATE TEMP TABLE IF NOT EXISTS listing_only(path TEXT PRIMARY KEY)')
     db.execute('DELETE FROM listing_only')
     if only is not None:

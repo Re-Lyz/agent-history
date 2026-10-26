@@ -6,7 +6,12 @@ import tkinter as tk
 from tkinter import ttk, filedialog
 
 from history_app.paths import RuntimePaths
-from history_app import config_backup, diagnostics, installation
+from history_app import config_backup, diagnostics, installation, accounts, program_maintenance, compatibility
+
+STATES = {'ok': '已检查', 'found': '已找到', 'installed': '安装记录', 'not-probed': '未执行自定义入口',
+          'missing': '未找到', 'not-installed': '未安装后台包', 'not-checked': '未检查', 'unreachable': '控制服务不可达',
+          'running': '服务运行中', 'stopped': '服务未运行', 'permission-denied': '检查权限不足',
+          'failed': '检查失败', 'timeout': '检查超时', 'unavailable': '不可用'}
 
 
 class MaintenanceWindow:
@@ -22,6 +27,7 @@ class MaintenanceWindow:
         self.source = tk.StringVar(value=str(RuntimePaths.current().source))
         self.selected_backup = tk.StringVar()
         self.controls = []
+        self.program_report, self.program_plan = None, None
         tabs = ttk.Notebook(self.window)
         tabs.pack(fill='both', expand=True, padx=12, pady=12)
         health, backups, install = (ttk.Frame(tabs, padding=12) for _ in range(3))
@@ -67,6 +73,39 @@ class MaintenanceWindow:
         self.button(bar, '预览卸载', lambda: self.preview_install('uninstall'))
         self.apply_button = self.button(bar, '执行当前预览', self.apply_install)
         self.output(install, 'install')
+        programs_page = ttk.Frame(tabs, padding=12)
+        tabs.add(programs_page, text='程序与账户')
+        ttk.Label(programs_page, text='扫描仅检查程序与已有后台包；更新前先预览，升级后使用合成历史检查兼容。',
+                  wraplength=800).pack(anchor='w')
+        bar = ttk.Frame(programs_page)
+        bar.pack(fill='x')
+        self.button(bar, '扫描程序与账户', self.scan_programs)
+        self.button(bar, '复制脱敏清单', self.copy_programs)
+        self.button(bar, '预览程序更新', self.preview_program_update)
+        self.update_program_button = self.button(bar, '执行程序更新', self.apply_program_update)
+        self.button(bar, '运行原生兼容检查', self.check_program)
+        self.program_tree = ttk.Treeview(programs_page, columns=('tool', 'version', 'channel', 'state'),
+                                        show='tree headings', height=4, name='program_inventory')
+        self.program_tree.heading('#0', text='程序 / 关联账户')
+        for key, title in (('tool', '类型'), ('version', '版本'), ('channel', '安装来源'), ('state', '状态')):
+            self.program_tree.heading(key, text=title)
+            self.program_tree.column(key, width=95, stretch=True)
+        self.program_tree.pack(fill='x', pady=6)
+        self.program_tree.bind('<<TreeviewSelect>>', self.select_program)
+        self.controls.append(self.program_tree)
+        self.account_tree = ttk.Treeview(programs_page, columns=('installed', 'running', 'state', 'pin'),
+                                        show='tree headings', height=4, name='account_inventory')
+        self.account_tree.heading('#0', text='账户')
+        for key, title in (('installed', '后台包版本'), ('running', '运行版本'), ('state', '服务状态'), ('pin', '保留固定版本')):
+            self.account_tree.heading(key, text=title)
+            self.account_tree.column(key, width=110)
+        self.account_tree.pack(fill='x', pady=6)
+        self.controls.append(self.account_tree)
+        bar = ttk.Frame(programs_page)
+        bar.pack(fill='x')
+        self.button(bar, '固定所选账户后台包', lambda: self.pin_account(True))
+        self.button(bar, '取消所选账户固定', lambda: self.pin_account(False))
+        self.output(programs_page, 'programs')
         ttk.Label(self.window, textvariable=self.status, wraplength=850).pack(fill='x', padx=12, pady=(0, 12))
         self.refresh_buttons()
         self.reload_backups()
@@ -103,9 +142,12 @@ class MaintenanceWindow:
         self.backup_picker.state(['disabled'] if self.running else ['!disabled', 'readonly'])
         self.restore_button.state(['!disabled'] if not self.running and self.plan and self.plan[0] == 'restore' else ['disabled'])
         self.apply_button.state(['!disabled'] if not self.running and self.plan and self.plan[0] == 'install' else ['disabled'])
+        if hasattr(self, 'update_program_button'):
+            self.update_program_button.state(['!disabled'] if not self.running and self.program_plan else ['disabled'])
 
     def clear_plan(self):
         self.plan = None
+        self.program_plan = None
         if hasattr(self, 'apply_button'):
             self.refresh_buttons()
 
@@ -225,3 +267,93 @@ class MaintenanceWindow:
             self.status.set('维护任务尚在运行，请等待完成后关闭。')
             return
         self.window.destroy()
+
+    def scan_programs(self):
+        paths = self.paths()
+        def done(report):
+            self.program_report = report
+            self.program_plan = None
+            self.program_tree.delete(*self.program_tree.get_children())
+            for item in report['programs']:
+                self.program_tree.insert('', 'end', iid=item['id'],
+                    text=Path(item['path'] or item['requested']).name + ' / ' + str(len(item['accounts'])),
+                    values=(item['tool'], item['version'] or '未知', item['channel'], STATES.get(item['state'], item['state'])))
+            self.show('programs', '扫描完成，选择程序查看账户与本机路径。\n兼容记录：\n' +
+                      json.dumps(report['compatibility'], ensure_ascii=False, indent=2))
+        self.run(lambda: accounts.inventory(paths), done, '正在只读检查程序和账户…')
+
+    def invalidate_programs(self):
+        self.program_plan, self.program_report = None, None
+        self.program_tree.delete(*self.program_tree.get_children())
+        self.account_tree.delete(*self.account_tree.get_children())
+
+    def selected_program(self):
+        selected = self.program_tree.selection()
+        if not selected or not self.program_report:
+            raise ValueError('请先扫描并选择程序。')
+        return next(item for item in self.program_report['programs'] if item['id'] == selected[0])
+
+    def select_program(self, event=None):
+        if not self.program_tree.selection():
+            return
+        item = self.selected_program()
+        self.program_plan = None
+        self.account_tree.delete(*self.account_tree.get_children())
+        related = [row for row in self.program_report['accounts'] if row['program_id'] == item['id']]
+        for row in related:
+            state = row['daemon']
+            self.account_tree.insert('', 'end', iid=row['id'], text=row['name'], values=(
+                state.get('installed') or '—', state.get('running') or '—', STATES.get(state['state'], state['state']), '是' if row['pinned'] else '否'))
+        self.show('programs', json.dumps(dict(program=item, accounts=related), ensure_ascii=False, indent=2))
+        self.refresh_buttons()
+
+    def copy_programs(self):
+        if self.program_report is None:
+            self.status.set('请先扫描程序与账户。')
+            return
+        self.window.clipboard_clear()
+        self.window.clipboard_append(json.dumps(accounts.shareable(self.program_report), ensure_ascii=False, indent=2))
+        self.status.set('已复制脱敏程序清单。')
+
+    def pin_account(self, enabled):
+        selected = self.account_tree.selection()
+        if not selected:
+            self.status.set('请选择账户。')
+            return
+        paths = self.paths()
+        self.run(lambda: accounts.set_pinned(paths, selected[0], enabled),
+                 lambda _: self.scan_programs(), '正在保存账户维护偏好…')
+
+    def preview_program_update(self):
+        try:
+            identity = self.selected_program()['id']
+        except ValueError as error:
+            self.status.set(str(error))
+            return
+        def done(plan):
+            self.program_plan = plan
+            self.show('programs', json.dumps(plan, ensure_ascii=False, indent=2))
+        paths = self.paths()
+        self.run(lambda: program_maintenance.preview(paths, identity), done, '正在检查程序更新计划…')
+
+    def apply_program_update(self):
+        if self.program_plan:
+            paths, plan = self.paths(), self.program_plan
+            def done(result):
+                self.invalidate_programs()
+                self.show('programs', json.dumps(result, ensure_ascii=False, indent=2))
+                self.status.set('程序维护结果已保存：' + result.get('state', 'unknown') + '。请重新扫描查看版本与账户状态。')
+            self.run(lambda: program_maintenance.apply(paths, plan), done, '正在执行程序更新与兼容检查…')
+
+    def check_program(self):
+        try:
+            item = self.selected_program()
+            if item['tool'] != 'codex' or not item['path'] or item['state'] != 'ok':
+                raise ValueError('请选择已安装的 Codex 程序。')
+        except ValueError as error:
+            self.status.set(str(error))
+            return
+        paths = self.paths()
+        self.run(lambda: compatibility.check(paths, item['path'], python=accounts.policy(paths).get('python')),
+                 lambda result: self.show('programs', json.dumps(result, ensure_ascii=False, indent=2)),
+                 '正在使用隔离合成历史检查原生兼容，不调用模型…')

@@ -58,7 +58,7 @@ def create_mixin(bindings, desktop):
                 finally:
                     performance.flush(ah.DATA)
             if key in ('history-list', 'reader', 'reader-page', 'reader-full', 'markdown',
-                       'selection-details', 'launch-preview', 'tool-detail', 'reader-search') or (key and key.startswith('tool-detail-')):
+                       'selection-details', 'launch-preview', 'tool-detail', 'reader-search', 'workspace') or (key and key.startswith('tool-detail-')):
                 if not hasattr(self, 'read_workers'):
                     self.read_workers = ReadWorkers()
                 self.read_workers.submit(runner)
@@ -159,6 +159,18 @@ def create_mixin(bindings, desktop):
             self.preserve_restored_preferences = True
             self.preferences = support.load_preferences()
             self.settings_changed()
+
+        def open_workspace(self):
+            from history_app.ui.workspace import WorkspaceWindow
+            current = getattr(self, 'workspace_window', None)
+            if current and current.window.winfo_exists():
+                current.window.lift()
+                return
+            def open_project(project):
+                self.project_map[project] = project
+                self.project.set(project)
+                self.refresh()
+            self.workspace_window = WorkspaceWindow(self.root, self.background, open_project)
 
         def settings_changed(self):
             import launch_profiles

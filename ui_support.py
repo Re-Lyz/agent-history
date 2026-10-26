@@ -200,9 +200,11 @@ def launch_readiness(target, user_home=None, program=None, *, new_session=False)
     if target != 'claude' and program is None:
         with contextlib.suppress(OSError, ValueError, KeyError):
             command = connections.load(ah.ROOT)['connections'][target].get('program') or command
-    executable = shutil.which(command)
-    if not executable and Path(command).is_file():
-        executable = command
+    from history_app import programs
+    try:
+        executable = programs.resolve(command)
+    except ValueError:
+        executable = None
     if not executable:
         issues.append(f'未找到 {command} 程序，请安装后重试。')
     elif os.name != 'nt' and (not os.access(executable, os.X_OK) or Path(executable).suffix.lower() in ('.cmd','.bat','.ps1','.exe')):

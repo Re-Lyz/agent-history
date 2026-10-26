@@ -40,6 +40,10 @@ def remember_json(prior, manifest, path, keys, action):
 
 
 def preflight(python):
+    from . import programs
+    python = programs.resolve(python)
+    if Path(python).name.lower() == 'pythonw.exe' and Path(python).with_name('python.exe').is_file():
+        python = str(Path(python).with_name('python.exe'))
     script = ('import sys,json,tkinter,sqlite3,markdown_it,pygments,mdit_py_cjk_friendly,mdit_py_plugins.dollarmath,ziamath,resvg_py; '
               'assert sys.version_info >= (3,11), "Python 3.11+ required"; '
               'db=sqlite3.connect(":memory:"); db.execute("CREATE VIRTUAL TABLE f USING fts5(text, tokenize=trigram)"); '

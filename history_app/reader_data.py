@@ -111,7 +111,7 @@ def prefix_end(path, stamp, end, ordinal_limit, cancel):
     return bound
 
 
-def file_message_page(row, limit=400, cursor=None, cancel=None):
+def file_message_page(row, limit=400, cursor=None, cancel=None, homes=None, provenance=False):
     """Read a tail page across bounded fork ancestors without parsing the whole log.
 
     A cursor identifies a chain entry, record byte offset and event boundary, so a
@@ -121,7 +121,7 @@ def file_message_page(row, limit=400, cursor=None, cancel=None):
         raise ValueError('Message page size must be positive.')
     checkpoint(cancel)
     if row['tool'] == 'codex':
-        home = dict(ah.codex_homes()).get(row['source'])
+        home = (dict(ah.codex_homes()) if homes is None else homes).get(row['source'])
         if home is None:
             raise ValueError('来源连接已不存在。')
         chain = ah.codex_import.ancestry(home, row['path'])
@@ -144,6 +144,9 @@ def file_message_page(row, limit=400, cursor=None, cancel=None):
         for offset, line in reverse_lines(path, end, cancel):
             checkpoint(cancel)
             events = message_events(row['tool'], path, json.loads(line), stamp, offset=offset)
+            if provenance:
+                for event_index, event in enumerate(events):
+                    event['locator'] = dict(path=str(path), offset=offset, event=event_index, stamp=stamp)
             if cursor and index == start and offset == cursor[1] and cursor[2]:
                 events = events[:cursor[2]]
             for event_index in range(len(events) - 1, -1, -1):

@@ -52,7 +52,8 @@ def compact(db, *, apply=False, now=None):
 
 
 def main():
-    if len(sys.argv) > 1 and sys.argv[1] in ('diagnose', 'backup', 'backups', 'restore-config', 'upgrade', 'uninstall'):
+    if len(sys.argv) > 1 and sys.argv[1] in ('diagnose', 'backup', 'backups', 'restore-config', 'upgrade', 'uninstall',
+                                         'programs', 'program-plan', 'update-programs', 'check-native', 'workspace', 'project-context'):
         from history_app.cli import main as application_maintenance
         return application_maintenance(sys.argv[1:])
     parser = argparse.ArgumentParser(description=__doc__)

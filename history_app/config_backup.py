@@ -74,11 +74,15 @@ def _load(paths, identity):
     if folder.is_symlink():
         raise ValueError('备份目录无效。')
     manifest = json.loads((folder / 'manifest.json').read_text(encoding='utf-8'))
+    names = set(paths.configuration())
+    present = set(manifest.get('files', {}))
+    # Older immutable backups predate program-policy; retain that new setting.
+    legacy = 'program-policy' in names and present == names - {'program-policy'}
     if manifest.get('version') != 1 or manifest.get('id') != identity or \
             manifest.get('shared') != str(paths.shared.resolve()) or manifest.get('data') != str(paths.data.resolve()) or \
-            set(manifest.get('files', {})) != set(paths.configuration()):
+            (present != names and not legacy):
         raise ValueError('备份不属于当前配置目录，或备份清单无效。')
-    payload = {}
+    payload = {'program-policy': fingerprint(paths.configuration()['program-policy'])[1]} if legacy else {}
     for name, item in manifest['files'].items():
         digest = item['sha256']
         if digest is None:

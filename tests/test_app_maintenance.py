@@ -40,6 +40,22 @@ class MaintenanceTests(unittest.TestCase):
         spec['shortcuts'] = []  # COM shortcuts have a separate actual-platform test.
         return installer.install(spec)
 
+    def test_legacy_config_backup_keeps_new_program_policy_without_rewriting_snapshot(self):
+        identity = backups.backup(self.paths)
+        manifest = self.paths.backups / identity / 'manifest.json'
+        value = json.loads(manifest.read_text(encoding='utf-8'))
+        del value['files']['program-policy']
+        atomic_json(manifest, value)
+        before = manifest.read_bytes()
+        policy = self.paths.data / 'program-policy.json'
+        atomic_json(policy, dict(version=1, pinned_accounts=['synthetic'], adapters={}))
+        original_policy = policy.read_bytes()
+        preview = backups.preview_restore(self.paths, identity)
+        self.assertFalse(any(item['name'] == 'program-policy' for item in preview['changes']))
+        backups.restore(self.paths, preview)
+        self.assertEqual(policy.read_bytes(), original_policy)
+        self.assertEqual(manifest.read_bytes(), before)
+
     def test_diagnosis_does_not_create_or_migrate_database_and_export_omits_private_values(self):
         secret = 'synthetic-sensitive-value'
         atomic_json(self.config['launch-profiles'], dict(version=1, profiles=[dict(

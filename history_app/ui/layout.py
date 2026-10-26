@@ -50,6 +50,7 @@ def create_mixin(bindings, desktop):
             ttk.Button(audit_bar, text='启动配置', command=self.manage_profiles).pack(side='right', padx=8)
             ttk.Button(audit_bar, text='配置历史来源', command=self.setup_sources).pack(side='right')
             ttk.Button(audit_bar, text='诊断与维护', command=self.open_maintenance).pack(side='right', padx=8)
+            ttk.Button(audit_bar, text='项目工作台', command=self.open_workspace).pack(side='right')
             ttk.Button(audit_bar, text='新增对话', style='Accent.TButton',
                        command=self.new_conversation).pack(side='right', padx=8)
 

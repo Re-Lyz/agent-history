@@ -7,26 +7,26 @@ import shutil
 import subprocess
 import threading
 import time
+from history_app import programs
 
 
 class CodexRPC:
-    def __init__(self, home, timeout=45):
+    def __init__(self, home, timeout=45, program=None):
         self.home = Path(home).resolve()
         self.timeout = timeout
         self.responses = queue.Queue()
         self.errors = []
         self.serial = 0
         self.process = None
+        self.program = program
 
     def __enter__(self):
-        executable = shutil.which('codex')
-        if not executable:
-            raise ValueError('Codex executable not found on PATH.')
+        executable = programs.resolve(programs.for_home(self.home, self.program))
         env = os.environ.copy()
         env['CODEX_HOME'] = str(self.home)
         env.pop('CODEX_SQLITE_HOME', None)
         self.process = subprocess.Popen(
-            [executable, 'app-server', '--stdio'], stdin=subprocess.PIPE,
+            programs.command(executable, ['app-server', '--stdio']), stdin=subprocess.PIPE,
             stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
             cwd=self.home, text=True, encoding='utf-8', errors='replace',
             creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))

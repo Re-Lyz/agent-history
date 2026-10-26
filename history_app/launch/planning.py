@@ -17,6 +17,7 @@ import entry_settings
 from history_app.reader_data import message_events, positioned_records, file_message_page
 import terminal_platform
 from history_app.paths import SOURCE
+from history_app import programs
 
 SHORTCUTS = {'openai1': 'codex1', 'openai2': 'codex2', 'openai3': 'codex3', 'deepseek': 'codexds'}
 CLAUDE = 'claude'
@@ -260,7 +261,7 @@ def program_command(program, args):
 def codex_invocation(target, sid, extra):
     if os.name != 'nt' or connections.load(ah.ROOT)['connections'].get(target, {}).get('direct'):
         entry = connections.load(ah.ROOT)['connections'][target]
-        return launch_runner.invocation(entry.get('program') or 'codex',
+        return launch_runner.invocation(programs.resolve(entry.get('program') or 'codex'),
                                         entry.get('launch_args', []) + extra + (['resume', sid] if sid else []))
     script = '& ' + ps_quote(str(Path.home() / 'codex-switch.ps1')) + ' ' + ps_quote(target)
     if sid is not None:
@@ -367,7 +368,7 @@ def prepared_command(plan, sid, row):
         values = dict(session_id=sid, source_session_id=row['id'], source=row['source'],
                       connection=profile.get('connection', ''), cwd=plan['cwd'])
         resume = profile['resume_args'] or (['resume', '{session_id}'] if profile['type'] == 'codex' else ['--resume', '{session_id}'])
-        inner = program_command(profile['program'], profiles.expand(profile['args'] + resume, values))
+        inner = program_command(programs.resolve(profile['program']), profiles.expand(profile['args'] + resume, values))
     elif plan['kind'] in ('codex', 'codex-import', 'claude-codex-import'):
         target = plan.get('native_target') or plan.get('target') or plan['args'][0]
         extra = profiles.expand(profile['args'], dict(session_id=sid, source_session_id=row['id'],
@@ -379,12 +380,19 @@ def prepared_command(plan, sid, row):
             inner = ['-EncodedCommand', base64.b64encode(script.encode('utf-16le')).decode('ascii')]
         if connections.load(ah.ROOT)['connections'][target].get('direct') or os.name != 'nt':
             entry = connections.load(ah.ROOT)['connections'][target]
-            inner = program_command(entry.get('program') or 'codex', entry.get('launch_args', []) + extra + ['resume', sid])
+            inner = program_command(programs.resolve(entry.get('program') or 'codex'), entry.get('launch_args', []) + extra + ['resume', sid])
     else:
         values = dict(session_id=sid, source_session_id=row['id'], source=row['source'], connection='', cwd=plan['cwd'])
         args = profiles.expand(profile['args'], values) if profile else []
         inner = program_command('claude', args + ['--resume', sid])
     environment = dict(plan.get('environment') or {})
+    native = profile.get('connection') if profile and profile['type'] == 'codex' else \
+        target if plan['kind'] in ('codex', 'codex-import', 'claude-codex-import') else None
+    if native:
+        entry = connections.load(ah.ROOT)['connections'][native]
+        selected_program = programs.resolve(profile.get('program') or entry.get('program') or 'codex') if profile else \
+            programs.resolve(entry.get('program') or 'codex')
+        environment['PATH'] = str(Path(selected_program).parent) + os.pathsep + environment.get('PATH', os.environ.get('PATH', ''))
     if profile and profile['type'] == 'codex' and profile.get('program'):
         environment['CODEX_HOME'] = str(dict(ah.codex_homes())[profile['connection']])
     elif plan['kind'] in ('codex', 'codex-import', 'claude-codex-import') and \
@@ -394,6 +402,19 @@ def prepared_command(plan, sid, row):
 
 
 def prepare_launch(db, row, target, cwd, expected_stamp=None, *, policy='single'):
+    profile = profiles.get(target) if target.startswith('profile:') else None
+    native = profile.get('connection') if profile and profile['type'] == 'codex' else target if target != CLAUDE and not profile else None
+    if native:
+        entry = connections.load(ah.ROOT)['connections'].get(native)
+        if not entry:
+            raise ValueError('目标必须是可启动的已注册 Codex 连接。')
+        home = (ah.ROOT / entry['home']).resolve()
+        with programs.using(home, (profile or {}).get('program') or entry.get('program') or 'codex'):
+            return _prepare_launch(db, row, target, cwd, expected_stamp, policy=policy)
+    return _prepare_launch(db, row, target, cwd, expected_stamp, policy=policy)
+
+
+def _prepare_launch(db, row, target, cwd, expected_stamp=None, *, policy='single'):
     """Caller holds the collector lock; prepare one selected version, then return its command."""
     import setup_backend
     if not setup_backend.source_enabled(row, setup_backend.load_sources()):
@@ -506,7 +527,10 @@ def new_plan(target, cwd):
         args = [profile['connection'], '-NoSync']
         entry = connections.load(ah.ROOT)['connections'][profile['connection']]
         if entry.get('direct') or os.name != 'nt':
-            program, args, extra = entry.get('program') or 'codex', entry.get('launch_args', []) + extra, []
+            program, args, extra = programs.resolve(entry.get('program') or 'codex'), entry.get('launch_args', []) + extra, []
+    if profile['type'] == 'codex' and (profile.get('program') or os.name != 'nt' or
+            connections.load(ah.ROOT)['connections'][profile['connection']].get('direct')):
+        program = programs.resolve(program)
     quote = ps_quote if os.name == 'nt' else terminal_platform.shlex.quote
     preview = 'cd ' + quote(cwd) + '\n' + launch_runner.invocation(program, args)
     if profile['type'] == 'codex' and not profile.get('program') and Path(program).suffix == '.ps1':
@@ -527,6 +551,10 @@ def prepare_new(target, cwd, expected_plan=None):
         raise ValueError('启动配置或工作目录已变化，请重新查看预览后启动。')
     profile = new_profile(target)
     environment = profiles.environment(profile)
+    if profile['type'] == 'codex':
+        entry = connections.load(ah.ROOT)['connections'][profile['connection']]
+        executable = programs.resolve(profile.get('program') or entry.get('program') or 'codex')
+        environment['PATH'] = str(Path(executable).parent) + os.pathsep + environment.get('PATH', os.environ.get('PATH', ''))
     if profile['type'] == 'codex' and (profile.get('program') or os.name != 'nt' or
             connections.load(ah.ROOT)['connections'][profile['connection']].get('direct')):
         environment['CODEX_HOME'] = str(dict(ah.codex_homes())[profile['connection']])

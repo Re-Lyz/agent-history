@@ -24,7 +24,7 @@ class RuntimePaths:
     def configuration(self):
         return {'connections': self.shared / 'connections.json',
                 **{name: self.data / (name + '.json') for name in
-                   ('sources', 'launch-profiles', 'launch-entries', 'ui-preferences')}}
+                   ('sources', 'launch-profiles', 'launch-entries', 'ui-preferences', 'program-policy')}}
 
     @property
     def backups(self):

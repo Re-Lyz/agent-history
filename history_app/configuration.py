@@ -25,4 +25,9 @@ def valid(name, value):
         return all(isinstance(item, dict) and isinstance(item.get('name'), str) and item['name'].strip() and
             all(type(item.get(key)) is bool for key in ('enabled', 'favorite', 'default')) and
             type(item.get('order')) is int for item in value.values())
+    if name == 'program-policy':
+        return value.get('version') == 1 and isinstance(value.get('adapters', {}), dict) and \
+            isinstance(value.get('pinned_accounts', []), list) and \
+            all(isinstance(item, str) for item in value.get('pinned_accounts', [])) and \
+            isinstance(value.get('python', ''), str)
     return name == 'ui-preferences' and value.get('version', 1) == 1
