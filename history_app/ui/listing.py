@@ -98,6 +98,13 @@ def create_mixin(bindings, desktop):
                 self.projects_dirty = False
                 current_selection = next(iter(self.tree.selection()), None)
                 if current_selection != selected:
+                    if current_selection and not any(
+                            current_selection == f"{row['source']}|{row['path']}" for row in rows):
+                        # A selection made while this query ran can name a file
+                        # just replaced by sync. Resolve that conversation in a
+                        # fresh query before deleting its selected tree node.
+                        self.refresh()
+                        return
                     selection = current_selection
                 self.display_rows(support.sort_history(rows, self.sort_column, self.sort_descending),
                                   selection, list_position)

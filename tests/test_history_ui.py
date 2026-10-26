@@ -1218,6 +1218,57 @@ class ViewerInteractionTests(unittest.TestCase):
             root.tk.call(root.protocol('WM_DELETE_WINDOW'))
         self.exercise(interact)
 
+    def test_selection_changed_during_refresh_follows_replaced_logical_version(self):
+        from tests.test_codex_import import native_db
+        import launch_backend
+        import conversation_store
+        for name in ('a', 'b'):
+            native_db(self.path / name)
+        with contextlib.closing(ah.connect()) as db:
+            original = dict(ah.resolve(db, 'two'))
+            prepared = launch_backend.prepare_launch(db, original, 'b', str(self.path))
+            ah.collect(db)
+            copied = dict(ah.resolve(db, prepared['session']))
+        started, release = threading.Event(), threading.Event()
+        actual = ui.list_rows
+        calls = []
+
+        def delayed(*args, **kwargs):
+            calls.append(True)
+            if len(calls) == 1:
+                started.set()
+                release.wait(10)
+            return actual(*args, **kwargs)
+
+        def interact(root):
+            tree = root.history_app.tree
+            self.wait(lambda: len(tree.get_children()) == 2)
+            self.wait_reader()
+            self.wait(lambda: not root.history_app.jobs)
+            grouped = next(iid for iid in tree.get_children() if any(
+                iid.endswith(row['path']) for row in (original, copied)))
+            selected = next(row for row in (original, copied) if grouped.endswith(row['path']))
+            replacement = copied if selected['path'] == original['path'] else original
+            with Path(replacement['path']).open('a', encoding='utf-8') as stream:
+                stream.write(json.dumps(dict(type='response_item', payload=dict(type='message', role='user',
+                    content=[dict(type='input_text', text='刷新时选择的逻辑对话')])), ensure_ascii=False) + '\n')
+            with contextlib.closing(ah.connect()) as db:
+                ah.collect(db)
+                conversation_store.sync_all(db)
+            with patch.object(ui, 'list_rows', side_effect=delayed):
+                root.history_app.refresh()
+                self.wait(started.is_set)
+                tree.selection_set(grouped)
+                root.update()
+                release.set()
+                self.wait(lambda: tree.selection() == (f"{replacement['source']}|{replacement['path']}",))
+                self.assertGreaterEqual(len(calls), 2)
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        try:
+            self.exercise(interact)
+        finally:
+            release.set()
+
     def test_cross_connection_launch_prepares_selected_version_and_uses_target_id(self):
         from tests.test_codex_import import native_db
         for name in ('a', 'b'):
