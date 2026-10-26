@@ -56,8 +56,13 @@ def registrations(paths):
 def daemon(account, program):
     home = Path(account['home']) if account.get('home') else None
     binary = home / 'packages/app-server-daemon/current/bin' / ('codex.exe' if os.name == 'nt' else 'codex') if home else None
-    if account['tool'] != 'codex' or not binary or not binary.is_file():
+    if account['tool'] != 'codex' or not binary:
         return dict(state='not-installed', installed=None, running=None, pin='none')
+    try:
+        if not binary.is_file():
+            return dict(state='not-installed', installed=None, running=None, pin='none')
+    except PermissionError:
+        return dict(state='permission-denied', installed=None, running=None, pin='unknown')
     installed = programs.version(binary, home=home)
     result = dict(state='unreachable', installed=installed['version'], running=None, pin='managed')
     if installed['state'] == 'permission-denied':

@@ -86,6 +86,7 @@ class ProgramMaintenanceTests(unittest.TestCase):
     def test_custom_entry_is_not_automatically_executed_by_inventory(self):
         entry = self.root / 'custom.ps1'
         entry.write_text('throw "must not run"')
+        entry.chmod(0o755)
         with patch.object(programs, 'run', side_effect=AssertionError('no custom commands')):
             result = programs.describe(str(entry), tool='custom')
         self.assertEqual(result['state'], 'not-probed')
@@ -104,6 +105,17 @@ class ProgramMaintenanceTests(unittest.TestCase):
         self.assertEqual(len(report['programs']), 1)
         self.assertNotIn(str(self.root), json.dumps(accounts.shareable(report)))
         self.assertFalse((self.paths.data / 'history.db').exists())
+
+        original_is_file = Path.is_file
+        def denied(path):
+            if 'app-server-daemon' in path.parts and path.is_relative_to(self.homes['one']):
+                raise PermissionError('synthetic package permissions')
+            return original_is_file(path)
+        with patch.object(Path, 'is_file', autospec=True, side_effect=denied), patch.object(programs, 'run', side_effect=run):
+            partial = accounts.inventory(self.paths)
+        states = {item['id']: item['daemon']['state'] for item in partial['accounts']}
+        self.assertEqual(states['one'], 'permission-denied')
+        self.assertEqual(states['two'], 'not-installed')
 
     def test_partial_update_retries_independent_accounts_and_preserves_pins(self):
         for name in self.homes:
