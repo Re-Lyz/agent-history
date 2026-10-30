@@ -234,6 +234,9 @@ def create_mixin(bindings, desktop):
             return selected
 
         def rename_current(self):
+            if any(job[0] == 'rename' for job in self.jobs.values()):
+                self.notice('上一项名称同步尚未完成，请完成后再修改。')
+                return
             rows = self.selected()
             if len(rows) != 1:
                 return

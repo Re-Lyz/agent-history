@@ -68,6 +68,8 @@ python tests/verify_native.py --source-session UUID_OR_PREFIX --trash
 
 `test_conversation_titles.py` 覆盖账户前缀与普通标签区分、原生标题修改前记录、原生写锁、缺失文件和接口失败；`test_ui_support.py` 与 UI 回归覆盖每条对话独立记忆启动命令、关联版本继承及重启持久化。`verify_ui_resume.py` 另以真实 Codex 验证重命名后 list／read／resume／重启读回和恢复自动标题，零模型请求。
 
+`test_lock_waiting.py` 使用真实 OS 锁核验有界等待、取消和互斥；Windows 保持占锁超过旧 CRT 的约 9 秒等待上限，再释放并验证后续操作。UI 场景覆盖等待期间响应、重复启动去重、取消／超时不创建任务、关闭只取消等待，以及源文件变化后拒绝启动。
+
 右栏交互覆盖只读文字选择、Ctrl+A／Ctrl+C、右键复制、动态内容更新和自适应高度；合成 160 组工具验证收起时不创建详情文本框、短工具消息也分批让出事件循环、同轮启动预览计算合并、读取工具不重算启动计划，以及刷新未变正文不重建排版。性能回归验证行为和控件数量，不以机器相关的耗时阈值判定成功。
 
 Linux 可运行 `python tests/linux_check.py`；它要求真实 Tk 桌面并运行完整回归，CI 使用 xvfb-run。`linux_terminal_check.py` 是显式运行的真实终端验证：传入 xterm 完整路径或设置 AGENT_HISTORY_TERMINAL，检查中文／特殊参数、环境、目录、退出报告、无桌面 CLI 和安装卸载。该脚本会打开测试终端，只执行临时记录程序，不启动 Agent。

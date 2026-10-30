@@ -267,6 +267,7 @@ def create_mixin(bindings, desktop):
             ttk.Button(actions, text='检查环境', style='Soft.TButton', command=self.check_environment).pack(side='right')
             self.launch_button = ttk.Button(inner, text='打开终端并继续', style='Accent.TButton', command=self.launch)
             self.launch_button.pack(fill='x')
+            self.launch_wait_button = ttk.Button(inner, text='取消等待启动', command=self.cancel_launch_wait)
             ttk.Button(inner, text='测试启动（不调用模型）', command=self.test_launch).pack(fill='x', pady=(6, 0))
             ttk.Button(inner, text='重试启动', command=self.launch).pack(fill='x', pady=(6, 0))
             ttk.Button(inner, text='重试同步／刷新续聊', command=self.retry_handoff).pack(fill='x', pady=(6, 0))

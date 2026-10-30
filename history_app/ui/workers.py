@@ -102,6 +102,7 @@ def create_mixin(bindings, desktop):
                         self.busy.set(self.idle_notice)
                     elif not self.busy.get():
                         self.busy.set(f'{len(self.rows)} 条')
+            self.update_launch_wait()
             self.root.after(100, self.poll)
 
         def reindex(self):

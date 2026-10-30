@@ -611,7 +611,7 @@ def create_mixin(bindings, desktop):
                         heads = {item['id'] for item in conversations.tips(db, member['conversation'], _items=members)}
                         for item in members:
                             checkpoint(cancel)
-                            version_row = json.loads(item['row_json'])
+                            version_row = dict(json.loads(item['row_json']), conversation=member['conversation'])
                             kind = '接续版本' if item['parent_revision'] else '原会话'
                             if version_row.get('kind') == 'import':
                                 kind = '已续聊副本' if item['baseline'] and item['head'] != item['baseline'] else '导入副本'

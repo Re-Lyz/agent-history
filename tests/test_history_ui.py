@@ -842,6 +842,176 @@ class ViewerInteractionTests(unittest.TestCase):
         self.exercise(interact)
         self.assertEqual(ui.launch_jobs.read(prepared_jobs[0])['state'], 'cancelled')
 
+    def test_version_selection_keeps_logical_launch_preference(self):
+        import conversation_store
+        with contextlib.closing(ah.connect()) as db:
+            one = dict(ah.resolve(db, 'one'))
+            two = dict(ah.resolve(db, 'two'))
+            member = conversation_store.enroll(db, one)
+            conversation_store.enroll(db, two, conversation=member['conversation'])
+        def interact(root):
+            app = root.history_app
+            self.wait(lambda: len(app.tree.get_children()) == 1)
+            app.tree.selection_set(app.tree.get_children()[0])
+            self.wait_reader()
+            app.target.set(app.target_labels['b'])
+            app.target_changed()
+            current = app.selected()[0]['path']
+            choice = next(label for label, row in app.version_options.items() if row['path'] != current)
+            app.version_value.set(choice)
+            app.select_version()
+            self.wait_reader()
+            self.assertEqual(app.selected()[0].get('conversation'), member['conversation'])
+            app.target.set(app.target_labels['a'])
+            app.target_changed()
+            app.refresh()
+            self.wait_reader()
+            self.assertEqual(self.target_value(), 'codexc a')
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        self.exercise(interact)
+
+    def test_close_and_repeated_rename_preserve_inflight_name_sync(self):
+        import conversation_titles
+        from tkinter import simpledialog
+        started, release = threading.Event(), threading.Event()
+        def delayed(*args):
+            started.set()
+            release.wait(10)
+            return dict(native=[])
+        def interact(root):
+            app = root.history_app
+            self.wait(lambda: len(app.tree.get_children()) == 2)
+            app.tree.selection_set(app.tree.get_children()[0])
+            self.wait_reader()
+            with patch.object(simpledialog, 'askstring', return_value='新名称') as ask:
+                app.rename_current()
+                self.wait(started.is_set)
+                root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+                self.assertTrue(root.tk.call('info', 'commands', '.'))
+                app.rename_current()
+                self.assertEqual(ask.call_count, 1)
+                release.set()
+                self.wait(lambda: not any(job[0] == 'rename' for job in app.jobs.values()))
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+            self.assertFalse(root.tk.call('info', 'commands', '.'))
+        try:
+            with patch.object(conversation_titles, 'rename_and_sync', side_effect=delayed):
+                self.exercise(interact)
+        finally:
+            release.set()
+
+    def test_open_terminal_keeps_preference_write_failure_visible(self):
+        prepared = dict(job=None, cwd=str(self.path), inner=['synthetic-command'], env={})
+        def interact(root):
+            app = root.history_app
+            self.wait(lambda: len(app.tree.get_children()) == 2)
+            app.tree.selection_set(app.tree.get_children()[0])
+            self.wait_reader()
+            with patch.object(ui.launcher, 'prepare_launch', return_value=prepared), \
+                    patch.object(support, 'save_preferences', side_effect=PermissionError('synthetic denied')):
+                app.launch()
+                self.wait(lambda: not any(job[0] == 'launch' for job in app.jobs.values()))
+                self.wait_reader()
+                self.assertIn('未能保存', app.busy.get())
+                self.assertIn('终端已打开', app.busy.get())
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        self.exercise(interact, expect_launch=True)
+
+    def test_launch_waits_for_indexing_without_freezing_then_opens_once(self):
+        prepared = dict(job=None, cwd=str(self.path), inner=['synthetic-command'], env={})
+        def interact(root):
+            app = root.history_app
+            self.wait(lambda: len(app.tree.get_children()) == 2)
+            self.wait(lambda: not any(job[0] == 'initial' for job in app.jobs.values()))
+            app.tree.selection_set(app.tree.get_children()[0])
+            self.wait_reader()
+            with patch.object(ui.launcher, 'prepare_launch', return_value=prepared) as prepare:
+                with ah.collect_lock(wait=False) as held:
+                    self.assertTrue(held)
+                    app.launch()
+                    self.wait(lambda: app.launch_wait_button.winfo_manager())
+                    prepare.assert_not_called()
+                    pulse = []
+                    root.after(1, lambda: pulse.append(True))
+                    self.wait(lambda: pulse)
+                    pending = app.launch_wait
+                    app.launch()
+                    self.assertIs(app.launch_wait, pending)
+                self.wait(lambda: not any(job[0] == 'launch' for job in app.jobs.values()))
+                self.assertEqual(prepare.call_count, 1)
+                self.assertFalse(app.launch_wait_button.winfo_manager())
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        self.exercise(interact, expect_launch=True)
+
+    def test_cancel_and_timeout_while_waiting_create_no_launch_job_or_terminal(self):
+        import history_app.ui.launch as launch_controller
+        def interact(root):
+            app = root.history_app
+            self.wait(lambda: len(app.tree.get_children()) == 2)
+            self.wait(lambda: not any(job[0] == 'initial' for job in app.jobs.values()))
+            app.tree.selection_set(app.tree.get_children()[0])
+            self.wait_reader()
+            with patch.object(ui.launcher, 'prepare_launch') as prepare:
+                with ah.collect_lock(wait=False) as held:
+                    self.assertTrue(held)
+                    app.launch()
+                    self.wait(lambda: app.launch_wait_button.winfo_manager())
+                    app.launch_wait_button.invoke()
+                    self.wait(lambda: not any(job[0] == 'launch' for job in app.jobs.values()))
+                    self.assertIn('已取消等待', app.idle_notice)
+                    with patch.object(launch_controller, 'LAUNCH_LOCK_TIMEOUT', 0.05), \
+                            patch.object(self.messagebox, 'showerror') as error:
+                        app.launch()
+                        self.wait(lambda: error.called)
+                        self.assertIn('等待历史同步超时', str(error.call_args))
+                prepare.assert_not_called()
+                self.assertFalse(list((self.data/'launch-jobs').glob('*.json')))
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        self.exercise(interact)
+
+    def test_close_during_lock_wait_cancels_only_the_pending_launch(self):
+        def interact(root):
+            app = root.history_app
+            self.wait(lambda: len(app.tree.get_children()) == 2)
+            self.wait(lambda: not any(job[0] == 'initial' for job in app.jobs.values()))
+            app.tree.selection_set(app.tree.get_children()[0])
+            self.wait_reader()
+            with ah.collect_lock(wait=False) as held:
+                self.assertTrue(held)
+                app.launch()
+                self.wait(lambda: app.launch_wait_button.winfo_manager())
+                root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+                self.assertTrue(root.tk.call('info', 'commands', '.'))
+                self.wait(lambda: not any(job[0] == 'launch' for job in app.jobs.values()))
+                self.assertIn('已取消等待', app.idle_notice)
+                with ah.collect_lock(wait=False) as other:
+                    self.assertFalse(other)
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+            self.assertFalse(root.tk.call('info', 'commands', '.'))
+        self.exercise(interact)
+
+    def test_source_changed_during_lock_wait_is_rejected_after_lock_release(self):
+        def interact(root):
+            app = root.history_app
+            self.wait(lambda: len(app.tree.get_children()) == 2)
+            self.wait(lambda: not any(job[0] == 'initial' for job in app.jobs.values()))
+            app.tree.selection_set(app.tree.get_children()[0])
+            self.wait_reader()
+            chosen = Path(app.selected()[0]['path'])
+            with patch.object(self.messagebox, 'showerror') as error:
+                with ah.collect_lock(wait=False) as held:
+                    self.assertTrue(held)
+                    app.launch()
+                    self.wait(lambda: app.launch_wait_button.winfo_manager())
+                    with chosen.open('a', encoding='utf-8') as stream:
+                        stream.write(json.dumps(dict(type='event_msg', payload=dict(type='user_message',
+                            message='Changed while waiting'))) + '\n')
+                self.wait(lambda: error.called)
+                self.assertIn('来源会话已变化', str(error.call_args))
+                self.assertFalse(list((self.data/'launch-jobs').glob('*.json')))
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        self.exercise(interact)
+
     def test_account_prefixes_and_launch_choices_are_independent_per_conversation(self):
         import conversation_titles
         path = self.path / 'a/sessions/two.jsonl'

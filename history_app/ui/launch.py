@@ -1,6 +1,7 @@
 """Launch behavior for the history window; dependencies are bound per window."""
 import contextlib
 import os
+import threading
 from pathlib import Path
 import agent_history as ah
 import trash
@@ -10,6 +11,9 @@ import new_conversation_ui
 import launch_jobs
 import conversation_store as conversations
 from history_app.reader_data import checkpoint
+from history_app.locks import LockWaitCancelled
+
+LAUNCH_LOCK_TIMEOUT = 120
 
 
 def create_mixin(bindings, desktop):
@@ -65,9 +69,10 @@ def create_mixin(bindings, desktop):
                     self.busy.set('新会话终端未打开，可修改配置后重试。')
                     return
                 self.preferences['default_target'] = target
-                self.save_target_preferences()
+                saved = self.save_target_preferences()
                 dialog.finish()
-                self.busy.set('新会话终端已打开；请在终端完成登录并开始对话')
+                self.notice('新会话终端已打开；请在终端完成登录并开始对话' +
+                            ('' if saved else '。但启动偏好未能保存，重启后需重新选择。'))
 
             self.background(prepare, done, label='正在准备新会话…', key='launch')
 
@@ -83,9 +88,11 @@ def create_mixin(bindings, desktop):
         def save_target_preferences(self):
             try:
                 support.save_preferences(self.preferences)
+                return True
             except OSError as error:
                 support.log_error('Saving conversation launch preference', error)
                 self.notice('启动选择已在当前窗口记住，但偏好文件未能保存。')
+                return False
 
         def copy_preview(self):
             self.root.clipboard_clear()
@@ -335,6 +342,9 @@ def create_mixin(bindings, desktop):
                 self.cwd.set(str(Path(folder)))
 
         def launch(self):
+            if any(job[0] == 'launch' for job in self.jobs.values()):
+                self.notice('已有启动正在等待或准备，请等待完成或取消等待。')
+                return
             try:
                 row, plan = self.current_plan()
                 target = self.target_names[self.target.get()]
@@ -347,14 +357,33 @@ def create_mixin(bindings, desktop):
                 return self.show_error('无法启动', error)
             cwd = self.cwd.get().strip()
             expected_stamp = self.reader_stamp
+            control = dict(cancel=threading.Event(), waiting=threading.Event(), finished=threading.Event(),
+                           guard=threading.Lock(), acquired=False)
+            self.launch_wait = control
+
+            def acquired():
+                with control['guard']:
+                    if control['cancel'].is_set():
+                        raise LockWaitCancelled()
+                    control['acquired'] = True
 
             def prepare():
-                with trash.locked_db() as db:
-                    prepared = launcher.prepare_launch(db, row, target, cwd, expected_stamp)
-                    member = conversations.lookup(db, row)
-                    return prepared, member['conversation'] if member else None
+                try:
+                    with trash.locked_db(lock_timeout=LAUNCH_LOCK_TIMEOUT, cancel=control['cancel'].is_set,
+                                         on_wait=control['waiting'].set, on_acquired=acquired) as db:
+                        prepared = launcher.prepare_launch(db, row, target, cwd, expected_stamp)
+                        member = conversations.lookup(db, row)
+                        return prepared, member['conversation'] if member else None
+                except LockWaitCancelled:
+                    return None
+                finally:
+                    control['finished'].set()
 
             def done(result):
+                self.launch_wait = None
+                if result is None:
+                    self.notice('已取消等待，未准备启动任务或打开终端。')
+                    return
                 prepared, conversation = result
                 self.launch_job = prepared.get('job')
                 try:
@@ -368,8 +397,33 @@ def create_mixin(bindings, desktop):
                     raise
                 self.preferences['default_target'] = target
                 support.remember_target(dict(row, conversation=conversation), target, self.preferences)
-                self.save_target_preferences()
-                self.notice('终端已打开；请在终端确认恢复结果')
+                saved = self.save_target_preferences()
+                self.notice('终端已打开；请在终端确认恢复结果' +
+                            ('' if saved else '。但启动偏好未能保存，重启后需重新选择。'))
             self.background(prepare, done, label='正在准备选中的会话版本…', key='launch')
+
+        def cancel_launch_wait(self):
+            control = getattr(self, 'launch_wait', None)
+            if not control:
+                return False
+            with control['guard']:
+                if control['acquired'] or control['finished'].is_set():
+                    return False
+                control['cancel'].set()
+            self.notice('正在取消等待；已有历史任务继续运行。')
+            return True
+
+        def update_launch_wait(self):
+            control = getattr(self, 'launch_wait', None)
+            if control:
+                with control['guard']:
+                    waiting = control['waiting'].is_set() and not control['acquired'] and not control['finished'].is_set()
+                if waiting:
+                    self.launch_wait_button.pack(fill='x', pady=(0, 6), before=self.launch_button)
+                    message = '正在取消等待…' if control['cancel'].is_set() else '正在等待历史同步完成；可以取消等待。'
+                    self.launch_status.set(message)
+                    self.busy.set(message)
+                    return
+            self.launch_wait_button.pack_forget()
 
     return LaunchController

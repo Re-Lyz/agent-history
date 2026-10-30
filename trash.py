@@ -75,10 +75,15 @@ def utcnow():
 
 
 @contextlib.contextmanager
-def locked_db(*, reindex=True):
+def locked_db(*, reindex=True, lock_timeout=None, cancel=None, on_wait=None, on_acquired=None):
     """Hold the collector lock so scheduled sync cannot race a delete or restore."""
-    with ah.collect_lock(wait=True) as locked:
+    from history_app.locks import waiting_lock
+    lock = ah.collect_lock(wait=True) if lock_timeout is None else waiting_lock(
+        ah.DATA / 'collect.lock', lock_timeout, cancel=cancel, on_wait=on_wait, on_acquired=on_acquired)
+    with lock as locked:
         if not locked:
+            if lock_timeout is not None:
+                raise TimeoutError('等待历史同步超时，尚未准备启动任务或打开终端；可稍后重试。')
             raise ValueError('另一个历史任务正在运行，请稍后再试。')
         db = ah.connect()
         try:

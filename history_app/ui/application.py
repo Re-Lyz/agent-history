@@ -253,6 +253,15 @@ def run_ui():
                 maintenance_window.window.lift()
                 self.busy.set('维护任务尚在运行，请等待完成后关闭。')
                 return
+            protected = {None, 'launch', 'rename', 'restore', 'handoff-sync', 'cancel-launch',
+                         'detach-session', 'reindex'}
+            pending = next((job for job in self.jobs.values() if job[0] in protected), None)
+            if pending:
+                if pending[0] == 'launch' and self.cancel_launch_wait():
+                    self.notice('正在取消启动等待，完成后可关闭窗口；已有历史任务继续运行。')
+                    return
+                self.notice(pending[1] + ' 请等待完成后关闭，避免打断收尾。')
+                return
             try:
                 if not getattr(self, 'preserve_restored_preferences', False):
                     self.preferences.update(geometry=self.normal_geometry, maximized=self.root.state() == 'zoomed',
