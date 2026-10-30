@@ -16,6 +16,22 @@ import ui_support as support
 
 
 class ViewerSupportTests(unittest.TestCase):
+    def test_targets_are_separate_per_conversation_and_survive_handoffs_and_restarts(self):
+        one = dict(tool='codex', source='a', id='same', path=str(self.home/'one'), cwd=str(self.home))
+        two = dict(one, path=str(self.home/'two'))
+        preferences = support.clean_preferences(dict(default_target='a'))
+        support.remember_target(one, 'b', preferences)
+        support.remember_target(two, 'a', preferences)
+        support.save_preferences(preferences)
+        preferences = support.load_preferences()
+        self.assertEqual(support.preferred_target(one, ['a', 'b'], preferences), 'b')
+        self.assertEqual(support.preferred_target(two, ['a', 'b'], preferences), 'a')
+        logical = dict(one, conversation='logical-one')
+        support.remember_target(logical, 'b', preferences)
+        moved = dict(logical, source='b', id='new', path=str(self.home/'replacement'))
+        self.assertEqual(support.preferred_target(moved, ['a', 'b'], preferences), 'b')
+        self.assertEqual(support.preferred_target(moved, ['a'], preferences), 'a')
+
     def test_new_session_allows_uninitialized_direct_connection_but_checks_program_and_configuration(self):
         (self.shared / 'connections.json').write_text(json.dumps({'connections': {
             'fresh': {'home': str(self.home), 'direct': True, 'program': str(self.program)}}}))

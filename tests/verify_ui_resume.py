@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import agent_history as ah
 import codex_import as ci
+import conversation_titles
 import history_ui as ui
 from native_codex import CodexRPC
 
@@ -60,19 +61,28 @@ def verify():
             assert prepared['session'] != sid
             copied = dict(selected, id=prepared['session'], source='b', path=prepared['path'], kind='import')
             assert ui.file_messages(copied) == preview
+            renamed = conversation_titles.rename_and_sync(db, copied, 'Synthetic renamed native title')
+            assert renamed['state'] == 'completed', renamed
             for attempt in range(2):
                 with CodexRPC(target) as rpc:
                     listed = rpc.call('thread/list', dict(limit=100))['data']
                     assert any(thread['id'] == prepared['session'] for thread in listed)
+                    assert next(thread for thread in listed if thread['id'] == prepared['session'])['name'] == 'Synthetic renamed native title'
                     restored = rpc.call('thread/resume', dict(threadId=prepared['session']))
                     assert restored['thread']['id'] == prepared['session']
+                    assert restored['thread']['name'] == 'Synthetic renamed native title'
                     turns = restored['thread'].get('turns') or rpc.call('thread/turns/list', dict(
                         threadId=prepared['session'], limit=100, itemsView='full'))['data']
                     assert 'Synthetic selected source question' in json.dumps(turns)
                     assert turns and any(turn.get('items') for turn in turns)
             assert path.read_bytes() == baseline
+            reset = conversation_titles.rename_and_sync(db, copied, '')
+            assert reset['state'] == 'completed', reset
+            with CodexRPC(target) as rpc:
+                assert rpc.call('thread/read', dict(threadId=prepared['session']))['thread']['name'] == 'Synthetic selected source question'
             print(json.dumps(dict(synthetic=True, listed=True, resumed=True, restart_resumed=True,
-                                  preview_matches=True, source_unchanged=True, model_requests=0)))
+                                  preview_matches=True, source_unchanged=True, native_title_synced=True,
+                                  native_title_reset=True, model_requests=0)))
 
 
 if __name__ == '__main__':

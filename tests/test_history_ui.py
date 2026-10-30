@@ -842,6 +842,35 @@ class ViewerInteractionTests(unittest.TestCase):
         self.exercise(interact)
         self.assertEqual(ui.launch_jobs.read(prepared_jobs[0])['state'], 'cancelled')
 
+    def test_account_prefixes_and_launch_choices_are_independent_per_conversation(self):
+        import conversation_titles
+        path = self.path / 'a/sessions/two.jsonl'
+        original = path.read_bytes()
+        with contextlib.closing(ah.connect()) as db:
+            conversation_titles.rename(db, dict(ah.resolve(db, 'two')), '[openai1] [a] 我的标题 [TODO]')
+        def interact(root):
+            app = root.history_app
+            self.wait(lambda: len(app.tree.get_children()) == 2)
+            one = next(i for i in app.tree.get_children() if 'one.jsonl' in i)
+            two = next(i for i in app.tree.get_children() if 'two.jsonl' in i)
+            self.assertEqual(app.tree.set(two, 'title'), '我的标题 [TODO]')
+            app.tree.selection_set(one)
+            self.choose_target('codexc b')
+            app.tree.selection_set(two)
+            self.wait_reader()
+            self.assertEqual(app.title_var.get(), '我的标题 [TODO]')
+            self.assertIn('原始标题：[openai1] [a] 我的标题 [TODO]', app.info.get())
+            self.choose_target('codexc a')
+            app.tree.selection_set(one)
+            self.wait_reader()
+            self.assertEqual(self.target_value(), 'codexc b')
+            app.tree.selection_set(two)
+            self.wait_reader()
+            self.assertEqual(self.target_value(), 'codexc a')
+            root.tk.call(root.protocol('WM_DELETE_WINDOW'))
+        self.exercise(interact)
+        self.assertEqual(path.read_bytes(), original)
+
     @unittest.skipUnless(md.available(), 'Install requirements-ui.txt for Markdown UI verification.')
     def test_clean_titles_local_links_compact_paragraphs_and_tool_rows(self):
         import conversation_store
@@ -1585,9 +1614,11 @@ class ViewerInteractionTests(unittest.TestCase):
         prefs = support.load_preferences()
         self.assertEqual(prefs['filters']['query'], '原始')
         self.assertEqual(prefs['filters']['project'], str(self.path))
-        self.assertEqual(prefs['project_targets'][support.project_key(str(self.path))], 'b')
-        self.assertEqual(prefs['default_target'], 'b')
-        self.assertEqual(support.preferred_target(dict(cwd=str(self.path), source='a', tool='codex'), ['a', 'b'], prefs), 'b')
+        self.assertEqual(prefs['project_targets'], {})
+        self.assertEqual(prefs['default_target'], '')
+        selected = dict(cwd=str(self.path), source='a', tool='codex', id='one',
+                        path=str(self.path/'a/sessions/one.jsonl'))
+        self.assertEqual(support.preferred_target(selected, ['a', 'b'], prefs), 'b')
 
 
     def test_small_transcript_and_launch_choices_use_workers_while_ui_remains_responsive(self):

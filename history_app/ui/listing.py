@@ -15,6 +15,9 @@ def create_mixin(bindings, desktop):
     simpledialog = desktop.simpledialog
 
     class ListingController:
+        def title_for_display(self, row):
+            return titles.display(row, self.source_box['values'])
+
         def sort_list(self, column):
             self.sort_descending = not self.sort_descending if self.sort_column == column else column == 'time'
             self.sort_column = column
@@ -143,7 +146,7 @@ def create_mixin(bindings, desktop):
                 iid = f"{r['source']}|{r['path']}"
                 self.rows[iid] = r
                 when = datetime.datetime.fromtimestamp(r['modified']).strftime('%m-%d %H:%M')
-                title = (r['title'] or r['cwd'] or r['id']).replace('\n', ' ')[:120]
+                title = (self.title_for_display(r) or r['cwd'] or r['id']).replace('\n', ' ')[:120]
                 values = (bindings.CHECK_OFF, when, r['source'], r['turns'], title)
                 if self.tree.exists(iid):
                     if tuple(map(str, self.tree.item(iid, 'values'))) != tuple(map(str, values)):
@@ -236,14 +239,25 @@ def create_mixin(bindings, desktop):
                 return
             row = rows[0]
             value = simpledialog.askstring('修改对话名称',
-                '修改整条逻辑对话的显示名称；留空恢复自动标题。\n名称保存在本工具中，原生 Agent 名称保持独立。',
-                initialvalue=row.get('title') or '', parent=self.root)
+                '修改整条逻辑对话名称，并同步已有 Codex 原生名称。\n正在使用的原生会话保留并提示待同步；留空恢复自动标题。',
+                initialvalue=self.title_for_display(row), parent=self.root)
             if value is None:
                 return
             def work():
                 with trash.locked_db(reindex=False) as db:
-                    return titles.rename(db, row, value)
-            self.background(work, lambda result: self.refresh(), label='保存对话名称…', key='rename')
+                    return titles.rename_and_sync(db, row, value)
+            def done(result):
+                self.refresh()
+                synced = sum(item['state'] == 'synced' for item in result['native'])
+                pending = len(result['native']) - synced
+                message = f'名称已保存；Codex 原生名称已同步 {synced} 项。'
+                if pending:
+                    reasons = '；'.join(dict.fromkeys(item.get('error', '待重试') for item in result['native'] if item['state'] != 'synced'))
+                    message += f'另有 {pending} 项待同步：{reasons}'
+                if result.get('index_pending'):
+                    message += '本机标题缓存待刷新，请点击“刷新历史”重试。'
+                self.notice(message)
+            self.background(work, done, label='保存并同步对话名称…', key='rename', refresh_preview=False)
 
         def load_more_rows(self):
             self.list_limit += bindings.LIST_PAGE

@@ -157,7 +157,7 @@ def versions(db, cancel):
 
 FIELDS = ('key', 'id', 'tool', 'source', 'path', 'cwd', 'title', 'started', 'updated', 'turns',
           'model', 'kind', 'imported_from', 'version', 'modified', 'indexed_path', 'member_identity',
-          'message_count', 'view_stamp')
+          'message_count', 'view_stamp', 'conversation')
 
 
 @cancellable
@@ -215,7 +215,7 @@ def page(db, source='', query='', include_imports=False, include_internal=False,
         coalesce(json_extract(v.metadata,'$.started'),s.started) AS started,s.updated,
         coalesce(v.turns,s.turns,0) AS turns,s.model,
         CASE WHEN s.kind='import' THEN s.kind ELSE coalesce(json_extract(v.metadata,'$.kind'),s.kind) END AS kind,
-        s.imported_from,s.version,m.identity AS member_identity,v.rowid AS view_rowid,v.search_text,
+        s.imported_from,s.version,m.identity AS member_identity,m.conversation,v.rowid AS view_rowid,v.search_text,
         json_extract(v.metadata,'$.message_count') AS message_count,v.stamp AS view_stamp
         FROM files f JOIN sessions s ON s.key=f.session_key LEFT JOIN file_views v ON v.path=f.path
         LEFT JOIN listing_versions m ON m.path=f.path AND m.source=f.source),

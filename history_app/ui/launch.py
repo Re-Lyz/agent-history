@@ -65,7 +65,7 @@ def create_mixin(bindings, desktop):
                     self.busy.set('新会话终端未打开，可修改配置后重试。')
                     return
                 self.preferences['default_target'] = target
-                self.preferences['project_targets'][support.project_key(prepared['cwd'])] = target
+                self.save_target_preferences()
                 dialog.finish()
                 self.busy.set('新会话终端已打开；请在终端完成登录并开始对话')
 
@@ -74,12 +74,18 @@ def create_mixin(bindings, desktop):
         def target_changed(self, event=None):
             target = self.target_names.get(self.target.get())
             if target:
-                self.preferences['default_target'] = target
                 rows = self.selected()
-                project = support.project_key(rows[0]['cwd']) if rows else ''
-                if project:
-                    self.preferences['project_targets'][project] = target
+                if len(rows) == 1:
+                    support.remember_target(rows[0], target, self.preferences)
+                    self.save_target_preferences()
             self.update_preview(immediate=True)
+
+        def save_target_preferences(self):
+            try:
+                support.save_preferences(self.preferences)
+            except OSError as error:
+                support.log_error('Saving conversation launch preference', error)
+                self.notice('启动选择已在当前窗口记住，但偏好文件未能保存。')
 
         def copy_preview(self):
             self.root.clipboard_clear()
@@ -344,9 +350,12 @@ def create_mixin(bindings, desktop):
 
             def prepare():
                 with trash.locked_db() as db:
-                    return launcher.prepare_launch(db, row, target, cwd, expected_stamp)
+                    prepared = launcher.prepare_launch(db, row, target, cwd, expected_stamp)
+                    member = conversations.lookup(db, row)
+                    return prepared, member['conversation'] if member else None
 
-            def done(prepared):
+            def done(result):
+                prepared, conversation = result
                 self.launch_job = prepared.get('job')
                 try:
                     if prepared['env']:
@@ -358,8 +367,8 @@ def create_mixin(bindings, desktop):
                         launch_jobs.update(self.launch_job, state='failed', error='无法打开终端；请检查终端程序后重试。')
                     raise
                 self.preferences['default_target'] = target
-                if row['cwd']:
-                    self.preferences['project_targets'][support.project_key(row['cwd'])] = target
+                support.remember_target(dict(row, conversation=conversation), target, self.preferences)
+                self.save_target_preferences()
                 self.notice('终端已打开；请在终端确认恢复结果')
             self.background(prepare, done, label='正在准备选中的会话版本…', key='launch')
 

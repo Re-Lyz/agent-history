@@ -2,6 +2,7 @@
 import csv
 import contextlib
 import datetime as dt
+import hashlib
 import json
 import logging
 import math
@@ -50,7 +51,7 @@ def project_key(cwd):
 def clean_preferences(raw):
     """Validate only UI fields; ignore malformed values and unknown fields."""
     out = dict(version=1, geometry='1440x860+40+40', maximized=False,
-               panes=[0.40, 0.75], filters={}, project_targets={}, default_target='',
+               panes=[0.40, 0.75], filters={}, project_targets={}, conversation_targets={}, default_target='',
                sort=dict(column='time', descending=True))
     if not isinstance(raw, dict) or raw.get('version', 1) != 1:
         return out
@@ -77,6 +78,10 @@ def clean_preferences(raw):
                                   if isinstance(k, str) and k and isinstance(v, str) and v}
     if isinstance(raw.get('default_target'), str):
         out['default_target'] = raw['default_target']
+    targets = raw.get('conversation_targets')
+    if isinstance(targets, dict):
+        out['conversation_targets'] = {k: v for k, v in targets.items()
+                                       if isinstance(k, str) and k and isinstance(v, str) and v}
     if raw.get('preview_mode') in ('markdown', 'raw'):
         out['preview_mode'] = raw['preview_mode']
     order = raw.get('sort')
@@ -171,8 +176,23 @@ def fit_geometry(value, screen_width, screen_height):
     return f'{width}x{height}+{x}+{y}'
 
 
+def target_keys(row):
+    """Logical identity survives handoffs; physical identity separates unrelated same IDs."""
+    keys = ['conversation:' + row['conversation']] if row.get('conversation') else []
+    identity = [row.get('tool'), row.get('source'), row.get('id'),
+                os.path.normcase(os.path.abspath(row['path'])) if row.get('path') else '']
+    keys.append('file:' + hashlib.sha256(json.dumps(identity).encode('utf-8')).hexdigest())
+    return keys
+
+
+def remember_target(row, target, preferences):
+    for key in target_keys(row):
+        preferences.setdefault('conversation_targets', {})[key] = target
+
+
 def preferred_target(row, targets, preferences):
-    """Project preference wins; missing commands fall back to the original connection."""
+    """Keep each conversation's command; old project defaults are only a fallback."""
+    remembered = preferences.get('conversation_targets', {})
     project = preferences.get('project_targets', {}).get(project_key(row.get('cwd')))
     default = row['source'] if row['source'] in targets else ('claude' if row['tool'] == 'claude' else '')
     import launch_profiles
@@ -181,7 +201,8 @@ def preferred_target(row, targets, preferences):
     import entry_settings
     configured_default = next((key for key, value in entry_settings.load().items()
                                if value.get('default') and value.get('enabled', True)), configured_default)
-    for candidate in (project, preferences.get('default_target'), configured_default, default, *targets):
+    for candidate in (*[remembered.get(key) for key in target_keys(row)],
+                      preferences.get('default_target'), project, configured_default, default, *targets):
         if candidate in targets:
             return candidate
     return ''

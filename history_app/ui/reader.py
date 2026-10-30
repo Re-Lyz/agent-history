@@ -528,7 +528,7 @@ def create_mixin(bindings, desktop):
                         except (ValueError, OSError) as error:
                             return r, [], None, error
                     self.reader_stamp = None
-                    self.title_var.set(r['title'] or r['id'])
+                    self.title_var.set(self.title_for_display(r) or r['id'])
                     self.launch_button.state(['disabled'])
                     self.copy_button.state(['disabled'])
                     request = self.reader_request
@@ -542,7 +542,7 @@ def create_mixin(bindings, desktop):
                 self.reader_messages, self.reader_stamp = [], None
                 self.message_count.set('')
                 self.more_messages.state(['disabled'])
-                self.title_var.set(r['title'] or r['id'])
+                self.title_var.set(self.title_for_display(r) or r['id'])
                 self.info.set('预览文件：' + r['path'])
                 self.preview.set(str(error))
                 self.set_text([('note', str(error))])
@@ -566,7 +566,7 @@ def create_mixin(bindings, desktop):
                 self.rows[iid] = r
             self.load_selection_metadata(r, read_request)
             default = support.preferred_target(r, list(self.target_labels), self.preferences)
-            self.title_var.set(r['title'] or '(无标题)')
+            self.title_var.set(self.title_for_display(r) or '(无标题)')
             lines = [f"{r['tool']} · {r['source']} · {r['turns']} 轮",
                      f"更新于 {(r['updated'] or '')[:16].replace('T', ' ')}", r['id']]
             if r.get('model'):
@@ -633,7 +633,10 @@ def create_mixin(bindings, desktop):
                 if cancel():
                     return
                 titled, self.version_options, selected, extra = result
-                self.title_var.set(titled['title'] or '(无标题)')
+                displayed = self.title_for_display(titled)
+                self.title_var.set(displayed or '(无标题)')
+                if displayed != (titled['title'] or '').strip():
+                    extra.append('原始标题：' + titled['title'])
                 self.version_box['values'] = list(self.version_options)
                 self.version_value.set(selected)
                 if extra:
